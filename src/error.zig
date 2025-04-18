@@ -17,7 +17,11 @@ pub const ParseError = error{
     InvalidValue,
 };
 
-pub const ParseOrAllocError = (ParseError || error{OutOfMemory});
+pub const AllocError = error{
+    OutOfMemory,
+};
+
+pub const ParseOrAllocError = (ParseError || AllocError);
 
 pub const Offset = struct {
     column: usize,

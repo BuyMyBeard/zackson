@@ -1,13 +1,14 @@
 const std = @import("std");
 const testing = std.testing;
 const value = @import("value.zig");
+const Value = value.Value;
 const Character = @import("character.zig").Character;
 const parser = @import("parser.zig");
 const jerror = @import("error.zig");
+const stringify = @import("stringify.zig").stringify;
 
 test "Json Object" {
-    const alloc = std.heap.page_allocator;
-    var jsonData: value.Object = std.StringHashMap(value.Value).init(alloc);
+    var jsonData: value.Object = std.StringHashMap(value.Value).init(std.testing.allocator);
     defer jsonData.deinit();
     try jsonData.put("key1", value.Value{ .string = "value" });
     try jsonData.put("key2", value.Value{ .float = 69.7 });
@@ -27,16 +28,60 @@ test "Json Object" {
     std.debug.print("\n{s}\n", .{key1_string_value});
 }
 
+pub fn expectEqualJsonValue(expected: Value, actual: Value) !void {
+    try testing.expectEqual(@tagName(expected), @tagName(actual));
+
+    switch (expected) {
+        .string => |s| try testing.expectEqualStrings(s, actual.string),
+        .float => |f| try testing.expectEqual(f, actual.float),
+        .int => |i| try testing.expectEqual(i, actual.int),
+        .bool => |b| try testing.expectEqual(b, actual.bool),
+        .null => {},
+        .array => |exp_array| {
+            const act_array = actual.array;
+            try testing.expectEqual(exp_array.len, act_array.len);
+            for (exp_array, 0..) |v, i| {
+                try expectEqualJsonValue(v, act_array[i]);
+            }
+        },
+        .object => |exp_obj| {
+            const act_obj = actual.object;
+            try testing.expectEqual(exp_obj.count(), act_obj.count());
+
+            var it = exp_obj.iterator();
+            while (it.next()) |entry| {
+                const key = entry.key_ptr.*;
+                const exp_val = entry.value_ptr.*;
+                const act_val = act_obj.get(key) orelse return error.TestExpectedEqual;
+                try expectEqualJsonValue(exp_val, act_val);
+            }
+        },
+    }
+}
+
 test "Parsing Simple" {
-    const jsonString: []const u8 = "{\"key1\": \"value🙂\", \"key2\": true}";
+    const jsonString: []const u8 = "{\"key1\": \"value\", \"key2\": true, \"key3\": {}}";
 
     const result = parser.parse(jsonString, .{}) catch |err| {
         std.debug.panic("{!}\n", .{err});
     };
 
+    var map = value.Object.init(std.heap.page_allocator);
+    defer map.deinit();
+
+    try map.put("key1", Value{.string = "value🙂"});
+    try map.put("key2", Value{.bool = true});
+
+    // const expected = Value{.object = map};
+
     switch (result) {
-        .success => std.debug.print("ok", .{}),
-        .failure => |err| try err.errorInfo.printError(),
+        .success => |successResult| {
+            // try expectEqualJsonValue(expected, successResult.value);
+            const string = try stringify(testing.allocator, successResult.value, .{.format = .pretty});
+            defer testing.allocator.free(string);
+            std.debug.print("{s}", .{string});
+        },
+        .failure => |err| return err.errorInfo.errorType,
     }
 }
 
@@ -106,3 +151,4 @@ test "Character.isHex" {
     try testing.expect(Character.zero.isHex());
     try testing.expect(!Character.leftBrace.isHex());
 }
+

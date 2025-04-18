@@ -63,10 +63,13 @@ const Cursor = struct {
     input: []const u8,
     pos: usize = 0,
 
+    fn hasReachedEnd(self: *Cursor) bool {
+        return self.pos >= self.input.len;
+    }
+
     fn peek(self: *Cursor) ?u8 {
-        if (self.pos >= self.input.len) return null;
-        const byte = self.input[self.pos];
-        return byte;
+        if (self.hasReachedEnd()) return null;
+        return self.input[self.pos];
     }
 
     fn peekOffset(self: *Cursor, n: usize) ?u8 {
@@ -75,13 +78,13 @@ const Cursor = struct {
     }
 
     fn next(self: *Cursor) ?u8 {
-        const index = self.pos + 1;
-        if (index >= self.input.len) return null;
-        return self.input[index];
+        const byte = self.peek();
+        self.pos += 1;
+        return byte;
     }
 
     fn skip(self: *Cursor, n: usize) void {
-        self.pos += n;
+        self.pos = math.min(usize, self.pos + n, self.input.len);
     }
 };
 
@@ -128,10 +131,32 @@ const ParseContext = struct {
         }
     }
 
-    fn consumeChar(self: *ParseContext, char: Character) !void {
+    fn consumeChar(self: *ParseContext, char: Character) ParseOrAllocError!void {
         const byte = try self.nextOrThrow();
         if (byte != char.toByte()) {
             return self.throwErr(ParseError.UnexpectedToken, try jerror.formatExpectMessage(self.errorMsgAllocator, &[_]Character{char}, byte));
+        }
+    }
+
+    fn consumeEscapeSequence(self: *ParseContext) ParseOrAllocError!void {
+        try self.consumeChar(Character.backwardSlash);
+        const byte = try self.peekOrThrow();
+        const char = Character.fromByte(byte);
+        const expectedChars = &[_]Character{ .doubleQuotes, .forwardSlash, .backwardSlash, .b, .f, .n, .r, .t, .u };
+        switch (char) {
+            .doubleQuotes, .forwardSlash, .backwardSlash, .b, .f, .n, .r, .t => self.cursor.skip(1),
+            .u => {
+                self.cursor.skip(1);
+                for (0..4) |offset| {
+                    const hexDigit = self.cursor.peekOffset(offset) orelse return self.throwErr(ParseError.UnexpectedEOF, null);
+                    if (!Character.fromByte(hexDigit).isHex()) {
+                        const message = try std.fmt.allocPrint(self.errorMsgAllocator, "expected an hex value, but got '{c}'", .{byte});
+                        return self.throwErr(ParseError.InvalidUnicodeSequence, message);
+                    }
+                }
+                self.cursor.skip(4);
+            },
+            else => return self.throwErr(ParseError.InvalidUnicodeSequence, try jerror.formatExpectMessage(self.errorMsgAllocator, expectedChars, byte)),
         }
     }
 
@@ -190,46 +215,21 @@ fn parseArray(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.Array {
 }
 
 fn parseString(ctx: *ParseContext) ParseOrAllocError!value.String {
-    const cursor = &ctx.cursor;
-    const byte = cursor.next() orelse return ctx.throwErr(ParseError.UnexpectedEOF, null);
-
-    if (byte != Character.doubleQuotes.toByte()) return ctx.throwErr(ParseError.UnexpectedToken, try jerror.formatExpectMessage(ctx.errorMsgAllocator, &[_]Character{Character.doubleQuotes}, byte));
-    const startIndex = cursor.pos + 1;
-    while (cursor.peek() != Character.doubleQuotes.toByte()) {
-        const stringByte = cursor.next();
-        if (stringByte == null) return ctx.throwErr(ParseError.UnexpectedEOF, null);
-        if (stringByte == Character.backwardSlash.toByte()) {
-            try handleEscapeCharacter(ctx);
+    try ctx.consumeChar(Character.doubleQuotes);
+    const startIndex = ctx.cursor.pos;
+    while (true) {
+        const byte = try ctx.peekOrThrow();
+        if (byte == Character.doubleQuotes.toByte()) {
+            try ctx.consumeChar(Character.doubleQuotes);
+            break;
+        } else if (byte == Character.backwardSlash.toByte()) {
+            try ctx.consumeEscapeSequence();
+        } else {
+            ctx.cursor.skip(1);
         }
     }
-    if (cursor.pos == startIndex) {
-        return "";
-    }
-    cursor.skip(1);
-    const endIndex = cursor.pos;
-    return cursor.input[startIndex..endIndex];
-}
-
-fn handleEscapeCharacter(ctx: *ParseContext) ParseOrAllocError!void {
-    const cursor = &ctx.cursor;
-    const byte = cursor.peek() orelse return ctx.throwErr(ParseError.InvalidUnicodeSequence, null);
-    const char = Character.fromByte(byte);
-    const expectedChars = &[_]Character{ .doubleQuotes, .forwardSlash, .backwardSlash, .b, .f, .n, .r, .t, .u };
-    switch (char) {
-        .doubleQuotes, .forwardSlash, .backwardSlash, .b, .f, .n, .r, .t => cursor.skip(1),
-        .u => {
-            cursor.skip(1);
-            for (1..4) |offset| {
-                const hexDigit = cursor.peekOffset(offset) orelse return ctx.throwErr(ParseError.UnexpectedEOF, null);
-                if (!Character.fromByte(hexDigit).isHex()) {
-                    const message = try std.fmt.allocPrint(ctx.errorMsgAllocator, "expected an hex value, but got '{c}'", .{byte});
-                    return ctx.throwErr(ParseError.InvalidUnicodeSequence, message);
-                }
-            }
-            cursor.skip(4);
-        },
-        else => return ctx.throwErr(ParseError.InvalidUnicodeSequence, try jerror.formatExpectMessage(ctx.errorMsgAllocator, expectedChars, byte)),
-    }
+    const endIndex = ctx.cursor.pos - 1;
+    return ctx.cursor.input[startIndex..endIndex];
 }
 
 fn validateHexDigit(ctx: *ParseContext, byte: u8) ParseError!void {
@@ -249,7 +249,7 @@ fn parseNum(_: *ParseContext) ParseError!value.Value {
 fn parseValue(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.Value {
     ctx.consumeWhitespace();
     const expectedChars = &[_]Character{ Character.leftBracket, Character.leftBrace };
-    const byte = ctx.cursor.peek() orelse return ctx.throwErr(ParseError.UnexpectedEOF, null);
+    const byte = try ctx.peekOrThrow();
     const char = Character.fromByte(byte);
 
     if (char.isDigitOrMinus()) {
