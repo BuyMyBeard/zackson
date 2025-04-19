@@ -6,6 +6,7 @@ const Character = @import("character.zig").Character;
 const jerror = @import("error.zig");
 const ParseError = jerror.ParseError;
 const ParseOrAllocError = jerror.ParseOrAllocError;
+const collection = @import("collection.zig");
 
 /// Represents the result of a JSON parsing operation.
 ///
@@ -39,6 +40,11 @@ pub const ParseResult = union(enum) {
             .failure => |*f| f.allocator.free(f.error_info),
         }
     }
+};
+
+pub const ObjectRepresentation = enum {
+    ordered,
+    unordered,
 };
 
 /// Configuration options for controlling JSON parsing behavior.
@@ -82,6 +88,12 @@ pub const ParseOptions = struct {
     ///
     /// Defaults to `true`.
     should_enforce_utf8: bool = true,
+
+    /// Determines whether parsed JSON objects should preserve key insertion order.
+    /// - `.ordered`: Object fields are stored in an `OrderedStringHashMap`, preserving insertion order.
+    /// - `.unordered`: Object fields are stored in a regular `StringArrayHashMap`, with no order guarantees.
+    /// Default is `.ordered`.
+    object_representation: ObjectRepresentation = .unordered,
 };
 
 /// Parses a UTF-8 JSON input buffer into a structured `Value` tree.
@@ -253,8 +265,8 @@ const ParseContext = struct {
         const char = Character.fromByte(byte);
 
         if (!char.isDigit()) {
-            const expected = &[_]Character {
-                .zero, .one, .two, .three, .four,
+            const expected = &[_]Character{
+                .zero, .one, .two,   .three, .four,
                 .five, .six, .seven, .eight, .nine,
             };
             return self.throwErr(ParseError.UnexpectedToken, try jerror.formatExpectMessage(self.error_msg_allocator, expected, byte));
@@ -300,12 +312,19 @@ const ParseContext = struct {
 };
 
 fn parseObject(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.Object {
+    return switch (ctx.options.object_representation) {
+        .ordered => try parseObjectOrdered(ctx, depth),
+        .unordered => try parseObjectUnordered(ctx, depth),
+    };
+}
+
+fn parseObjectUnordered(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.Object {
     const incremented_depth = try ctx.incrementAndGuardDepth(depth);
     try ctx.consumeChar(Character.leftBrace);
-    var object: value.Object = std.StringHashMap(value.Value).init(ctx.arena_alloc.allocator());
+    var map = try std.StringArrayHashMapUnmanaged(value.Value).init(ctx.arena_alloc.allocator(), &value.empty_keys_slice, &value.empty_values_slice);
     ctx.consumeWhitespace();
     if (try ctx.peekOrThrow() == Character.rightBrace.toByte()) {
-        return object;
+        return value.Object{.unordered = map};
     }
     while (true) {
         const key = try parseString(ctx, StringType.value);
@@ -313,7 +332,7 @@ fn parseObject(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.Object {
         try ctx.consumeChar(Character.colon);
         ctx.consumeWhitespace();
         const val = try parseValue(ctx, incremented_depth);
-        try object.put(key, val);
+        try map.put(ctx.arena_alloc.allocator(), key, val);
         ctx.consumeWhitespace();
         if (try ctx.peekOrThrow() == Character.comma.toByte()) {
             try ctx.consumeChar(Character.comma);
@@ -326,7 +345,37 @@ fn parseObject(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.Object {
         }
     }
 
-    return object;
+    return value.Object{.unordered = map};
+}
+
+fn parseObjectOrdered(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.Object {
+    const incremented_depth = try ctx.incrementAndGuardDepth(depth);
+    try ctx.consumeChar(Character.leftBrace);
+    var map_builder = try collection.OrderedStringHashMapBuilder(value.Value).init(ctx.arena_alloc.allocator());
+    ctx.consumeWhitespace();
+    if (try ctx.peekOrThrow() == Character.rightBrace.toByte()) {
+        return value.Object{.ordered = try map_builder.freeze()};
+    }
+    while (true) {
+        const key = try parseString(ctx, StringType.value);
+        ctx.consumeWhitespace();
+        try ctx.consumeChar(Character.colon);
+        ctx.consumeWhitespace();
+        const val = try parseValue(ctx, incremented_depth);
+        _ = try map_builder.put(key, val);
+        ctx.consumeWhitespace();
+        if (try ctx.peekOrThrow() == Character.comma.toByte()) {
+            try ctx.consumeChar(Character.comma);
+            ctx.consumeWhitespace();
+            continue;
+        } else {
+            ctx.consumeWhitespace();
+            try ctx.consumeChar(Character.rightBrace);
+            break;
+        }
+    }
+
+    return value.Object{.ordered = try map_builder.freeze()};
 }
 
 fn parseArray(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.Array {
@@ -397,11 +446,11 @@ fn validateHexDigit(ctx: *ParseContext, byte: u8) ParseError!void {
 fn parseNum(ctx: *ParseContext) ParseOrAllocError!value.Value {
     const start_index = ctx.cursor.pos;
     _ = ctx.maybeConsumeChar(Character.minus);
-    const firstDigitByte = try ctx.peekOrThrow();
-    const firstDigit = Character.fromByte(firstDigitByte);
+    const first_digit_byte = try ctx.peekOrThrow();
+    const first_digit = Character.fromByte(first_digit_byte);
     try ctx.consumeDigit();
 
-    if (firstDigit != Character.zero) {
+    if (first_digit != Character.zero) {
         while (ctx.maybeConsumeDigit()) {}
     }
     if (ctx.maybeConsumeChar(Character.dot)) {
@@ -413,17 +462,17 @@ fn parseNum(ctx: *ParseContext) ParseOrAllocError!value.Value {
         }
         while (ctx.maybeConsumeDigit()) {}
     }
-    const endIndex = ctx.cursor.pos;
-    const sequence = ctx.input[start_index..endIndex];
+    const end_index = ctx.cursor.pos;
+    const sequence = ctx.input[start_index..end_index];
 
-    const intValue = std.fmt.parseInt(i64, sequence, 10) catch {
-        const floatValue = std.fmt.parseFloat(f64, sequence) catch {
+    const int_value = std.fmt.parseInt(i64, sequence, 10) catch {
+        const float_value = std.fmt.parseFloat(f64, sequence) catch {
             return ctx.throwErr(ParseError.InvalidValue, null);
         };
-        return value.Value{.float = floatValue};
+        return value.Value{ .float = float_value };
     };
 
-    return value.Value{.int = intValue};
+    return value.Value{ .int = int_value };
 }
 
 fn parseValue(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.Value {

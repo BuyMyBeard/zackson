@@ -1,4 +1,5 @@
 const std = @import("std");
+const collection = @import("collection.zig");
 
 /// Represents any valid JSON value.
 ///
@@ -49,17 +50,24 @@ pub const Value = union(enum) {
 /// via `ParseOptions.max_key_length`.
 pub const String = []const u8;
 
-/// Represents a JSON object (key-value map).
-///
-/// Implemented using Zig's `std.StringHashMap`, where:
-/// - Keys are `[]const u8`
-/// - Values are recursively typed as `Value`
-///
-/// ⚠️ Note: The order of keys is **not preserved** during parsing.
-/// This is due to the use of a hash map for performance and lookup efficiency.
-pub const Object = std.StringHashMap(Value);
+pub const OrderedStringValueHashMap = collection.OrderedStringHashMap(Value);
+pub const UnorderedStringValueHashMap = std.StringArrayHashMapUnmanaged(Value);
+pub const empty_keys_slice = [_][]const u8{};
+pub const empty_values_slice = [_]Value{};
 
-
+/// Represents a parsed JSON object (key-value map).
+///
+/// This is a tagged union that allows two possible internal representations:
+/// - `.ordered`: Preserves key insertion order using `collection.OrderedStringHashMap(Value)`
+/// - `.unordered`: Discards key order, using `std.StringArrayHashMap(Value)` for maximum performance
+///
+/// The choice of representation is controlled by `ParseOptions.object_representation`.
+/// Use `.ordered` if deterministic output or key order is important (e.g. for config, formatting, or diffing).
+/// Use `.unordered` for slightly lower memory usage and faster construction.
+pub const Object = union(enum) {
+    ordered: collection.OrderedStringHashMap(Value),
+    unordered: std.StringArrayHashMapUnmanaged(Value),
+};
 
 /// Represents a JSON array (ordered list of values).
 pub const Array = []const Value;

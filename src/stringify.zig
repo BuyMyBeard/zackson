@@ -5,6 +5,7 @@ const Object = jsonvalue.Object;
 const Array = jsonvalue.Array;
 const AllocError = @import("error.zig").AllocError;
 const Character = @import("character.zig").Character;
+const collection = @import("collection.zig");
 
 /// Controls the formatting style of the JSON output.
 pub const FormatStyle = enum {
@@ -82,9 +83,24 @@ fn appendString(string: []const u8, list: *std.ArrayListAligned(u8, null)) Alloc
     try appendChar(Character.doubleQuotes, list);
 }
 
+const IterType = union(enum) {
+    unordered: jsonvalue.UnorderedStringValueHashMap.Iterator,
+    ordered: collection.OrderedStringHashMapIterator(Value),
+
+    pub fn next(self: *IterType) ?collection.Entry(Value) {
+        return switch(self.*)  {
+            .ordered => |*iter| iter.next(),
+            .unordered => |*iter| iter.next(),
+        };
+    }
+};
+
 fn appendObject(object: Object, list: *std.ArrayListAligned(u8, null), indent: u16, options: *const StringifyOptions) AllocError!void {
     const incremented_indent = indent + options.indentation;
-    var iterator = object.iterator();
+    var iterator: IterType = switch(object) {
+        .ordered => |map| IterType{.ordered = map.iter()},
+        .unordered => |map| IterType{.unordered = map.iterator()},
+    };
     try appendChar(Character.leftBrace, list);
     var index: usize = 0;
     while (true) {

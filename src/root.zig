@@ -8,7 +8,7 @@ const jerror = @import("error.zig");
 const stringify = @import("stringify.zig").stringify;
 
 test "Json Object" {
-    var json_data: value.Object = std.StringHashMap(value.Value).init(std.testing.allocator);
+    var json_data: value.Object = std.StringArrayHashMap(value.Value).init(std.testing.allocator, &value.empty_keys_slice, &value.empty_values_slice);
     defer json_data.deinit();
     try json_data.put("key1", value.Value{ .string = "value" });
     try json_data.put("key2", value.Value{ .float = 69.7 });
@@ -66,11 +66,11 @@ test "Parsing Simple" {
         std.debug.panic("{!}\n", .{err});
     };
 
-    var map = value.Object.init(std.heap.page_allocator);
-    defer map.deinit();
+    var map = try value.UnorderedStringValueHashMap.init(std.testing.allocator, &value.empty_keys_slice, &value.empty_values_slice);
+    defer map.deinit(std.testing.allocator);
 
-    try map.put("key1", Value{ .string = "value🙂" });
-    try map.put("key2", Value{ .bool = true });
+    try map.put(std.testing.allocator, "key1", Value{ .string = "value🙂" });
+    try map.put(std.testing.allocator,"key2", Value{ .bool = true });
 
     // const expected = Value{.object = map};
 
