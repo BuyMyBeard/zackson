@@ -28,7 +28,7 @@ pub fn formatExpectMessage(alloc: std.mem.Allocator, characters: []const Charact
 /// Represents structural and semantic parsing errors.
 ///
 /// These errors are **never thrown**. Instead, they are wrapped inside a
-/// `ParsingErrorInfo` and returned via `JsonParseResult.failure`.
+/// `ParsingErrorInfo` and returned via `ParseResult.failure`.
 pub const ParseError = error{
     /// Thrown when a token doesn't match the expected grammar.
     UnexpectedToken,
@@ -61,7 +61,7 @@ pub const ParseError = error{
 /// Represents unrecoverable allocation failures during parsing.
 ///
 /// These errors are **bubbled up directly** via Zig’s error system,
-/// and are not included in the `JsonParseResult.failure` variant.
+/// and are not included in the `ParseResult.failure` variant.
 pub const AllocError = error{
     OutOfMemory,
 };
@@ -80,7 +80,7 @@ pub const Offset = struct {
 
 /// Detailed information about a structured JSON parsing failure.
 ///
-/// This struct is used in the `.failure` variant of `JsonParseResult`.
+/// This struct is used in the `.failure` variant of `ParseResult`.
 /// It includes:
 /// - The `ParseError` type.
 /// - The input slice that caused the failure.

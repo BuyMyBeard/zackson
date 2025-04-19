@@ -11,7 +11,7 @@ const ParseOrAllocError = jerror.ParseOrAllocError;
 ///
 /// This tagged union separates parsing **success**, **structured failures**, and
 /// **unrecoverable allocation errors** (which are thrown separately via `AllocError`).
-pub const JsonParseResult = union(enum) {
+pub const ParseResult = union(enum) {
     /// Parsing succeeded.
     ///
     /// The parsed value is available in `value`, and the arena allocator used for all
@@ -33,7 +33,7 @@ pub const JsonParseResult = union(enum) {
     /// Deinitializes the result:
     /// - If `.success`, deinitializes the arena and frees associated memory.
     /// - If `.failure`, frees the memory allocated for the error message.
-    pub fn deinit(self: *JsonParseResult) void {
+    pub fn deinit(self: *ParseResult) void {
         switch (self.*) {
             .success => |*s| s.arena.deinit(),
             .failure => |*f| f.allocator.free(f.error_info),
@@ -84,8 +84,35 @@ pub const ParseOptions = struct {
     should_enforce_utf8: bool = true,
 };
 
-/// Parses input into a `Value` tree.
-pub fn parse(input: []const u8, options: ParseOptions) error{OutOfMemory}!JsonParseResult {
+/// Parses a UTF-8 JSON input buffer into a structured `Value` tree.
+///
+/// This function performs a complete parse of the input string, applying
+/// the constraints and safety checks defined in `ParseOptions`.
+///
+/// - On success, returns a `ParseResult.success` variant containing the parsed value
+///   and the arena allocator used for all internal allocations.
+/// - On structural or semantic failure, returns a `ParseResult.failure` with detailed
+///   error information (e.g. unexpected token, depth overflow, invalid value).
+/// - On allocation failure, throws `error.OutOfMemory`.
+///
+/// Notes:
+/// - The input is expected to be valid UTF-8 unless `should_enforce_utf8` is set to false.
+/// - Key and value lengths, input size, and depth are all enforced by `ParseOptions`.
+///
+/// The caller is responsible for calling `.deinit()` on the returned `ParseResult`
+/// to release allocated memory.
+///
+/// Example usage:
+/// ```zig
+/// const result = try parse(input, .{});
+/// defer result.deinit();
+/// ```
+///
+/// See also:
+/// - `ParseOptions`
+/// - `ParseResult`
+/// - `Value`
+pub fn parse(input: []const u8, options: ParseOptions) error{OutOfMemory}!ParseResult {
     var ctx = ParseContext.init(input, options);
     if (input.len > options.max_input_size) {
         ctx.throwErr(ParseError.InputTooLong, null) catch {};
@@ -104,7 +131,7 @@ pub fn parse(input: []const u8, options: ParseOptions) error{OutOfMemory}!JsonPa
         }
     };
 
-    return JsonParseResult{ .success = .{
+    return ParseResult{ .success = .{
         .arena = ctx.arena_alloc,
         .value = json_data,
     } };
@@ -228,9 +255,9 @@ const ParseContext = struct {
         return incremented_depth;
     }
 
-    fn cleanUpAndGenerateFailureParseResult(self: *ParseContext) JsonParseResult {
+    fn cleanUpAndGenerateFailureParseResult(self: *ParseContext) ParseResult {
         self.arena_alloc.deinit();
-        return JsonParseResult{ .failure = .{
+        return ParseResult{ .failure = .{
             .error_info = self.err.?,
             .allocator = self.error_msg_allocator,
         } };
