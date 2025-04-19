@@ -46,7 +46,7 @@ pub const Value = union(enum) {
 /// - JSON **object keys** (e.g. `"name": "Ziggy"`)
 ///
 /// Note: Key strings are typically shorter and may be subject to different size limits
-/// via `ParseOptions.maxKeyLength`.
+/// via `ParseOptions.max_key_length`.
 pub const String = []const u8;
 
 /// Represents a JSON object (key-value map).

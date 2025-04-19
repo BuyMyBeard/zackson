@@ -8,17 +8,17 @@ const jerror = @import("error.zig");
 const stringify = @import("stringify.zig").stringify;
 
 test "Json Object" {
-    var jsonData: value.Object = std.StringHashMap(value.Value).init(std.testing.allocator);
-    defer jsonData.deinit();
-    try jsonData.put("key1", value.Value{ .string = "value" });
-    try jsonData.put("key2", value.Value{ .float = 69.7 });
-    try jsonData.put("key3", value.Value{ .array = &[_]value.Value{
+    var json_data: value.Object = std.StringHashMap(value.Value).init(std.testing.allocator);
+    defer json_data.deinit();
+    try json_data.put("key1", value.Value{ .string = "value" });
+    try json_data.put("key2", value.Value{ .float = 69.7 });
+    try json_data.put("key3", value.Value{ .array = &[_]value.Value{
         .{ .int = 25 },
         .{ .string = "value" },
     } });
-    try jsonData.put("key4", value.Value{ .bool = true });
+    try json_data.put("key4", value.Value{ .bool = true });
 
-    const key1_val = jsonData.get("key1") orelse return error.MissingKey;
+    const key1_val = json_data.get("key1") orelse return error.MissingKey;
 
     const key1_string_value = switch (key1_val) {
         .string => |s| s,
@@ -60,28 +60,28 @@ pub fn expectEqualJsonValue(expected: Value, actual: Value) !void {
 }
 
 test "Parsing Simple" {
-    const jsonString: []const u8 = "{\"key1\": \"value\", \"key2\": true, \"key3\": {}}";
+    const json_string: []const u8 = "{\"key1\": \"value\", \"key2\": true, \"key3\": {}}";
 
-    const result = parser.parse(jsonString, .{}) catch |err| {
+    const result = parser.parse(json_string, .{}) catch |err| {
         std.debug.panic("{!}\n", .{err});
     };
 
     var map = value.Object.init(std.heap.page_allocator);
     defer map.deinit();
 
-    try map.put("key1", Value{.string = "value🙂"});
-    try map.put("key2", Value{.bool = true});
+    try map.put("key1", Value{ .string = "value🙂" });
+    try map.put("key2", Value{ .bool = true });
 
     // const expected = Value{.object = map};
 
     switch (result) {
-        .success => |successResult| {
+        .success => |success_result| {
             // try expectEqualJsonValue(expected, successResult.value);
-            const string = try stringify(testing.allocator, successResult.value, .{.format = .pretty});
+            const string = try stringify(testing.allocator, success_result.value, .{ .format = .pretty });
             defer testing.allocator.free(string);
             std.debug.print("{s}", .{string});
         },
-        .failure => |err| return err.errorInfo.errorType,
+        .failure => |err| return err.error_info.error_type,
     }
 }
 
@@ -102,8 +102,8 @@ test "joinChars with valid values" {
     defer arena.deinit();
 
     var ctx: parser.ParseContext = .{
-        .arenaAlloc = arena,
-        .errorMsgAllocator = arena.allocator(),
+        .arena_alloc = arena,
+        .error_msg_allocator = arena.allocator(),
         .gpa = undefined,
         .cursor = parser.Cursor{ .input = "" },
         .input = "",
@@ -131,8 +131,8 @@ test "formatExpectMessage shows expected tokens" {
     defer arena.deinit();
 
     var ctx: parser.ParseContext = .{
-        .arenaAlloc = arena,
-        .errorMsgAllocator = arena.allocator(),
+        .arena_alloc = arena,
+        .error_msg_allocator = arena.allocator(),
         .gpa = undefined,
         .cursor = parser.Cursor{ .input = "X" },
         .input = "X",
@@ -151,4 +151,3 @@ test "Character.isHex" {
     try testing.expect(Character.zero.isHex());
     try testing.expect(!Character.leftBrace.isHex());
 }
-

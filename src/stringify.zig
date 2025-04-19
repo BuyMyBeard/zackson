@@ -19,7 +19,6 @@ pub const FormatStyle = enum {
     compact,
 };
 
-
 /// Options for customizing the behavior of JSON stringification.
 pub const StringifyOptions = struct {
     /// Output formatting style (`pretty` or `compact`).
@@ -58,7 +57,7 @@ pub fn stringify(alloc: std.mem.Allocator, value: Value, options: StringifyOptio
 }
 
 fn appendDecodedValue(value: Value, list: *std.ArrayListAligned(u8, null), indent: u16, options: *const StringifyOptions) AllocError!void {
-    switch(value) {
+    switch (value) {
         .object => |object| try appendObject(object, list, indent, options),
         .array => |array| try appendArray(array, list, indent, options),
         .string => |string| try appendString(string, list),
@@ -80,51 +79,51 @@ fn appendBool(boolean: bool, list: *std.ArrayListAligned(u8, null)) AllocError!v
 fn appendString(string: []const u8, list: *std.ArrayListAligned(u8, null)) AllocError!void {
     try appendChar(Character.doubleQuotes, list);
     try list.appendSlice(string);
-    try appendChar(Character.doubleQuotes,list);
+    try appendChar(Character.doubleQuotes, list);
 }
 
 fn appendObject(object: Object, list: *std.ArrayListAligned(u8, null), indent: u16, options: *const StringifyOptions) AllocError!void {
-    const incrementedIndent = indent + options.indentation;
+    const incremented_indent = indent + options.indentation;
     var iterator = object.iterator();
     try appendChar(Character.leftBrace, list);
     var index: usize = 0;
-    while(true) {
+    while (true) {
         const entry = iterator.next() orelse break;
         if (index != 0) {
-            try appendChar(Character.comma,list);
-        } 
+            try appendChar(Character.comma, list);
+        }
         if (options.isPretty()) {
             try appendChar(Character.newline, list);
-            try appendIndent(incrementedIndent, list);
+            try appendIndent(incremented_indent, list);
         }
         try appendString(entry.key_ptr.*, list);
-        try appendChar(Character.colon,list);
+        try appendChar(Character.colon, list);
         if (options.isPretty()) {
             try appendChar(Character.space, list);
         }
-        try appendDecodedValue(entry.value_ptr.*, list, incrementedIndent, options);
+        try appendDecodedValue(entry.value_ptr.*, list, incremented_indent, options);
         index += 1;
     }
     if (options.isPretty() and index != 0) {
-        try appendChar(Character.newline,list);
+        try appendChar(Character.newline, list);
         try appendIndent(indent, list);
     }
     try appendChar(Character.rightBrace, list);
 }
 
 fn appendArray(array: Array, list: *std.ArrayListAligned(u8, null), indent: u16, options: *const StringifyOptions) AllocError!void {
-    const incrementedIndent = indent + options.indentation;
+    const incremented_indent = indent + options.indentation;
     try appendChar(Character.leftBracket, list);
     var index: usize = 0;
-    for(array) |value| {
+    for (array) |value| {
         if (index != 0) {
-            try appendChar(Character.comma,list);
-        } 
+            try appendChar(Character.comma, list);
+        }
         if (options.isPretty()) {
             try appendChar(Character.newline, list);
-            try appendIndent(incrementedIndent, list);
+            try appendIndent(incremented_indent, list);
         }
-        try appendDecodedValue(value, list, incrementedIndent, options);
+        try appendDecodedValue(value, list, incremented_indent, options);
         index += 1;
     }
     if (options.isPretty() and index != 0) {
@@ -136,26 +135,26 @@ fn appendArray(array: Array, list: *std.ArrayListAligned(u8, null), indent: u16,
 
 fn appendInt(int: i64, list: *std.ArrayListAligned(u8, null)) AllocError!void {
     const alloc = std.heap.page_allocator;
-    const formattedInt = try std.fmt.allocPrint(alloc, "{d}", .{int});
-    defer alloc.free(formattedInt);
-    try list.appendSlice(formattedInt);
+    const formatted_int = try std.fmt.allocPrint(alloc, "{d}", .{int});
+    defer alloc.free(formatted_int);
+    try list.appendSlice(formatted_int);
 }
 
 fn appendFloat(float: f64, list: *std.ArrayListAligned(u8, null)) AllocError!void {
     const alloc = std.heap.page_allocator;
-    const formattedInt = try std.fmt.allocPrint(alloc, "{d}", .{float});
-    defer alloc.free(formattedInt);
-    try list.appendSlice(formattedInt);
+    const formatted_float = try std.fmt.allocPrint(alloc, "{d}", .{float});
+    defer alloc.free(formatted_float);
+    try list.appendSlice(formatted_float);
 }
 
 fn appendChar(char: Character, list: *std.ArrayListAligned(u8, null)) AllocError!void {
     try list.append(char.toByte());
 }
 
-fn appendIndent(indent :u16, list: *std.ArrayListAligned(u8, null)) AllocError!void {
+fn appendIndent(indent: u16, list: *std.ArrayListAligned(u8, null)) AllocError!void {
     const alloc = std.heap.page_allocator;
-    const indentBuffer = try alloc.alloc(u8, indent);
-    defer alloc.free(indentBuffer);
-    @memset(indentBuffer, Character.space.toByte());
-    try list.appendSlice(indentBuffer);
+    const indent_buffer = try alloc.alloc(u8, indent);
+    defer alloc.free(indent_buffer);
+    @memset(indent_buffer, Character.space.toByte());
+    try list.appendSlice(indent_buffer);
 }

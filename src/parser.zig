@@ -7,7 +7,6 @@ const jerror = @import("error.zig");
 const ParseError = jerror.ParseError;
 const ParseOrAllocError = jerror.ParseOrAllocError;
 
-
 /// Represents the result of a JSON parsing operation.
 ///
 /// This tagged union separates parsing **success**, **structured failures**, and
@@ -24,10 +23,10 @@ pub const JsonParseResult = union(enum) {
 
     /// Parsing failed due to a structural or semantic issue (not memory).
     ///
-    /// Error details such as error type, line/column, and message are stored in `errorInfo`.
+    /// Error details such as error type, line/column, and message are stored in `error_info`.
     /// The allocator used to create the error message (if any) is returned for cleanup.
     failure: struct {
-        errorInfo: jerror.ParsingErrorInfo,
+        error_info: jerror.ParsingErrorInfo,
         allocator: std.mem.Allocator,
     },
 
@@ -37,7 +36,7 @@ pub const JsonParseResult = union(enum) {
     pub fn deinit(self: *JsonParseResult) void {
         switch (self.*) {
             .success => |*s| s.arena.deinit(),
-            .failure => |*f| f.allocator.free(f.errorInfo),
+            .failure => |*f| f.allocator.free(f.error_info),
         }
     }
 };
@@ -50,15 +49,15 @@ pub const ParseOptions = struct {
     /// a `ParseError.MaxDepthReached` is thrown.
     ///
     /// Defaults to 64.
-    maxDepth: u16 = 64,
+    max_depth: u16 = 64,
 
     /// Maximum size (in bytes) for any parsed string value (e.g. string literals, numbers as strings, etc.).
     ///
-    /// This limit does **not** apply to object keys — see `maxKeyLength`.
+    /// This limit does **not** apply to object keys — see `max_key_length`.
     /// If exceeded, a `ParseError.StringValueTooLong` is thrown **after** parsing the full string.
     ///
     /// Defaults to 16 KB (16_384 bytes).
-    maxStringValueLength: usize = 16_384,
+    max_string_value_length: usize = 16_384,
 
     /// Maximum size (in bytes) for any parsed object key (i.e. field name).
     ///
@@ -66,7 +65,7 @@ pub const ParseOptions = struct {
     /// If exceeded, a `ParseError.KeyTooLong` is thrown.
     ///
     /// Defaults to 256 bytes.
-    maxKeyLength: usize = 256,
+    max_key_length: usize = 256,
 
     /// Maximum size (in bytes) for the entire input buffer.
     ///
@@ -74,7 +73,7 @@ pub const ParseOptions = struct {
     /// a `ParseError.InputTooLong` is thrown.
     ///
     /// Defaults to 1 MB (1_048_576 bytes).
-    maxInputSize: usize = 1_048_576,
+    max_input_size: usize = 1_048_576,
 
     /// Whether to validate that the input is valid UTF-8.
     ///
@@ -82,21 +81,21 @@ pub const ParseOptions = struct {
     /// a `ParseError.InvalidUtf8` is thrown.
     ///
     /// Defaults to `true`.
-    shouldEnforceUtf8: bool = true,
+    should_enforce_utf8: bool = true,
 };
 
 /// Parses input into a `Value` tree.
 pub fn parse(input: []const u8, options: ParseOptions) error{OutOfMemory}!JsonParseResult {
     var ctx = ParseContext.init(input, options);
-    if (input.len > options.maxInputSize) {
+    if (input.len > options.max_input_size) {
         ctx.throwErr(ParseError.InputTooLong, null) catch {};
         return ctx.cleanUpAndGenerateFailureParseResult();
     }
-    if (options.shouldEnforceUtf8 and !std.unicode.utf8ValidateSlice(input)) {
+    if (options.should_enforce_utf8 and !std.unicode.utf8ValidateSlice(input)) {
         ctx.throwErr(ParseError.InvalidUtf8, null) catch {};
         return ctx.cleanUpAndGenerateFailureParseResult();
     }
-    const jsonData = parseValue(&ctx, 0) catch |e| {
+    const json_data = parseValue(&ctx, 0) catch |e| {
         switch (e) {
             error.OutOfMemory => |outOfMemoryErr| return outOfMemoryErr,
             else => {
@@ -106,8 +105,8 @@ pub fn parse(input: []const u8, options: ParseOptions) error{OutOfMemory}!JsonPa
     };
 
     return JsonParseResult{ .success = .{
-        .arena = ctx.arenaAlloc,
-        .value = jsonData,
+        .arena = ctx.arena_alloc,
+        .value = json_data,
     } };
 }
 
@@ -141,8 +140,8 @@ const Cursor = struct {
 };
 
 const ParseContext = struct {
-    arenaAlloc: std.heap.ArenaAllocator,
-    errorMsgAllocator: std.mem.Allocator,
+    arena_alloc: std.heap.ArenaAllocator,
+    error_msg_allocator: std.mem.Allocator,
     gpa: std.heap.DebugAllocator(.{}),
     cursor: Cursor,
     input: []const u8,
@@ -154,15 +153,15 @@ const ParseContext = struct {
         return ParseContext{
             .gpa = gpa,
             .cursor = Cursor{ .input = input },
-            .arenaAlloc = std.heap.ArenaAllocator.init(gpa.allocator()),
-            .errorMsgAllocator = gpa.allocator(),
+            .arena_alloc = std.heap.ArenaAllocator.init(gpa.allocator()),
+            .error_msg_allocator = gpa.allocator(),
             .input = input,
             .options = options,
         };
     }
 
     fn throwErr(self: *ParseContext, err: ParseError, message: ?[]u8) ParseError {
-        self.err = .{ .errorType = err, .message = message, .input = self.input };
+        self.err = .{ .error_type = err, .message = message, .input = self.input };
         return err;
     }
 
@@ -175,9 +174,9 @@ const ParseContext = struct {
     }
 
     fn consumeSequence(self: *ParseContext, seq: []const u8) ParseError!void {
-        for (seq) |expectedByte| {
+        for (seq) |expected_byte| {
             const byte = try self.nextOrThrow();
-            if (byte != expectedByte) {
+            if (byte != expected_byte) {
                 return ParseError.InvalidValue;
             }
         }
@@ -186,7 +185,7 @@ const ParseContext = struct {
     fn consumeChar(self: *ParseContext, char: Character) ParseOrAllocError!void {
         const byte = try self.nextOrThrow();
         if (byte != char.toByte()) {
-            return self.throwErr(ParseError.UnexpectedToken, try jerror.formatExpectMessage(self.errorMsgAllocator, &[_]Character{char}, byte));
+            return self.throwErr(ParseError.UnexpectedToken, try jerror.formatExpectMessage(self.error_msg_allocator, &[_]Character{char}, byte));
         }
     }
 
@@ -194,7 +193,7 @@ const ParseContext = struct {
         try self.consumeChar(Character.backwardSlash);
         const byte = try self.peekOrThrow();
         const char = Character.fromByte(byte);
-        const expectedChars = &[_]Character{ .doubleQuotes, .forwardSlash, .backwardSlash, .b, .f, .n, .r, .t, .u };
+        const expected_chars = &[_]Character{ .doubleQuotes, .forwardSlash, .backwardSlash, .b, .f, .n, .r, .t, .u };
         switch (char) {
             .doubleQuotes, .forwardSlash, .backwardSlash, .b, .f, .n, .r, .t => self.cursor.skip(1),
             .u => {
@@ -202,13 +201,13 @@ const ParseContext = struct {
                 for (0..4) |offset| {
                     const hexDigit = self.cursor.peekOffset(offset) orelse return self.throwErr(ParseError.UnexpectedEOF, null);
                     if (!Character.fromByte(hexDigit).isHex()) {
-                        const message = try std.fmt.allocPrint(self.errorMsgAllocator, "expected an hex value, but got '{c}'", .{byte});
+                        const message = try std.fmt.allocPrint(self.error_msg_allocator, "expected an hex value, but got '{c}'", .{byte});
                         return self.throwErr(ParseError.InvalidUnicodeSequence, message);
                     }
                 }
                 self.cursor.skip(4);
             },
-            else => return self.throwErr(ParseError.InvalidUnicodeSequence, try jerror.formatExpectMessage(self.errorMsgAllocator, expectedChars, byte)),
+            else => return self.throwErr(ParseError.InvalidUnicodeSequence, try jerror.formatExpectMessage(self.error_msg_allocator, expected_chars, byte)),
         }
     }
 
@@ -224,24 +223,24 @@ const ParseContext = struct {
     }
 
     fn incrementAndGuardDepth(self: *ParseContext, depth: u16) ParseError!u16 {
-        const incrementedDepth = depth + 1;
-        if (depth > self.options.maxDepth) return self.throwErr(ParseError.MaxDepthReached, null);
-        return incrementedDepth;
+        const incremented_depth = depth + 1;
+        if (depth > self.options.max_depth) return self.throwErr(ParseError.MaxDepthReached, null);
+        return incremented_depth;
     }
 
     fn cleanUpAndGenerateFailureParseResult(self: *ParseContext) JsonParseResult {
-        self.arenaAlloc.deinit();
+        self.arena_alloc.deinit();
         return JsonParseResult{ .failure = .{
-            .errorInfo = self.err.?,
-            .allocator = self.errorMsgAllocator,
+            .error_info = self.err.?,
+            .allocator = self.error_msg_allocator,
         } };
     }
 };
 
 fn parseObject(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.Object {
-    const incrementedDepth = try ctx.incrementAndGuardDepth(depth);
+    const incremented_depth = try ctx.incrementAndGuardDepth(depth);
     try ctx.consumeChar(Character.leftBrace);
-    var object: value.Object = std.StringHashMap(value.Value).init(ctx.arenaAlloc.allocator());
+    var object: value.Object = std.StringHashMap(value.Value).init(ctx.arena_alloc.allocator());
     ctx.consumeWhitespace();
     if (try ctx.peekOrThrow() == Character.rightBrace.toByte()) {
         return object;
@@ -251,7 +250,7 @@ fn parseObject(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.Object {
         ctx.consumeWhitespace();
         try ctx.consumeChar(Character.colon);
         ctx.consumeWhitespace();
-        const val = try parseValue(ctx, incrementedDepth);
+        const val = try parseValue(ctx, incremented_depth);
         try object.put(key, val);
         ctx.consumeWhitespace();
         if (try ctx.peekOrThrow() == Character.comma.toByte()) {
@@ -269,9 +268,9 @@ fn parseObject(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.Object {
 }
 
 fn parseArray(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.Array {
-    const incrementedDepth = try ctx.incrementAndGuardDepth(depth);
+    const incremented_depth = try ctx.incrementAndGuardDepth(depth);
     try ctx.consumeChar(Character.leftBracket);
-    var list = std.ArrayListAligned(value.Value, null).init(ctx.arenaAlloc.allocator());
+    var list = std.ArrayListAligned(value.Value, null).init(ctx.arena_alloc.allocator());
     ctx.consumeWhitespace();
     if (try ctx.peekOrThrow() == Character.rightBrace.toByte()) {
         return list.toOwnedSlice();
@@ -279,7 +278,7 @@ fn parseArray(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.Array {
 
     while (true) {
         ctx.consumeWhitespace();
-        const val = try parseValue(ctx, incrementedDepth);
+        const val = try parseValue(ctx, incremented_depth);
         try list.append(val);
         ctx.consumeWhitespace();
         if (try ctx.peekOrThrow() == Character.comma.toByte()) {
@@ -301,9 +300,9 @@ const StringType = enum {
     value,
 };
 
-fn parseString(ctx: *ParseContext, stringType: StringType) ParseOrAllocError!value.String {
+fn parseString(ctx: *ParseContext, string_type: StringType) ParseOrAllocError!value.String {
     try ctx.consumeChar(Character.doubleQuotes);
-    const startIndex = ctx.cursor.pos;
+    const start_index = ctx.cursor.pos;
     while (true) {
         const byte = try ctx.peekOrThrow();
         if (byte == Character.doubleQuotes.toByte()) {
@@ -315,20 +314,20 @@ fn parseString(ctx: *ParseContext, stringType: StringType) ParseOrAllocError!val
             ctx.cursor.skip(1);
         }
     }
-    const endIndex = ctx.cursor.pos - 1;
-    const length = endIndex - startIndex;
-    switch(stringType) {
-        .key => if (length > ctx.options.maxKeyLength) return ctx.throwErr(ParseError.KeyTooLong, null),
-        .value => if (length > ctx.options.maxStringValueLength) return ctx.throwErr(ParseError.StringValueTooLong, null),
+    const end_index = ctx.cursor.pos - 1;
+    const length = end_index - start_index;
+    switch (string_type) {
+        .key => if (length > ctx.options.max_key_length) return ctx.throwErr(ParseError.KeyTooLong, null),
+        .value => if (length > ctx.options.max_string_value_length) return ctx.throwErr(ParseError.StringValueTooLong, null),
     }
-    return ctx.cursor.input[startIndex..endIndex];
+    return ctx.cursor.input[start_index..end_index];
 }
 
 fn validateHexDigit(ctx: *ParseContext, byte: u8) ParseError!void {
     return switch (byte) {
         Character.zero.toByte()...Character.nine.to, Character.a...Character.f, Character.A...Character.F => {},
         else => {
-            const message = std.fmt.allocPrint(ctx.errorMsgAllocator, "expected an hex value, but got '{c}'", .{byte});
+            const message = std.fmt.allocPrint(ctx.error_msg_allocator, "expected an hex value, but got '{c}'", .{byte});
             return ctx.throwErr(ParseError.InvalidUnicodeSequence, message);
         },
     };
@@ -340,7 +339,7 @@ fn parseNum(_: *ParseContext) ParseError!value.Value {
 
 fn parseValue(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.Value {
     ctx.consumeWhitespace();
-    const expectedChars = &[_]Character{ Character.leftBracket, Character.leftBrace };
+    const expected_chars = &[_]Character{ Character.leftBracket, Character.leftBrace };
     const byte = try ctx.peekOrThrow();
     const char = Character.fromByte(byte);
 
@@ -364,6 +363,6 @@ fn parseValue(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.Value {
             return value.Value{ .null = {} };
         },
         .doubleQuotes => value.Value{ .string = try parseString(ctx, StringType.value) },
-        else => return ctx.throwErr(ParseError.UnexpectedToken, try jerror.formatExpectMessage(ctx.errorMsgAllocator, expectedChars, byte)),
+        else => return ctx.throwErr(ParseError.UnexpectedToken, try jerror.formatExpectMessage(ctx.error_msg_allocator, expected_chars, byte)),
     };
 }
