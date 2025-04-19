@@ -56,6 +56,9 @@ pub const ParseError = error{
 
     /// Thrown when UTF-8 validation is enabled and the input is invalid.
     InvalidUtf8,
+
+    /// Thrown when a control character is unescaped within an object key or string value.
+    UnescapedControlCharacter,
 };
 
 /// Represents unrecoverable allocation failures during parsing.

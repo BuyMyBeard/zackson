@@ -175,6 +175,10 @@ pub const Character = enum(u8) {
         };
     }
 
+    pub fn isControlCharacter(self: Character) bool {
+        return (self.toByte() <= Character.unitSeparator.toByte());
+    }
+
     pub fn join(alloc: std.mem.Allocator, items: []const Character, separator: []const u8) ![]u8 {
         var list = std.ArrayList(u8).init(alloc);
 

@@ -60,7 +60,7 @@ pub fn expectEqualJsonValue(expected: Value, actual: Value) !void {
 }
 
 test "Parsing Simple" {
-    const json_string: []const u8 = "[123, 0.5223, 10e10]";
+    const json_string: []const u8 = "[123, 0.5223, \"Big \nPP\"]";
 
     const result = parser.parse(json_string, .{}) catch |err| {
         std.debug.panic("{!}\n", .{err});

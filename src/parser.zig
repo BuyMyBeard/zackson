@@ -199,17 +199,17 @@ const ParseContext = struct {
         };
     }
 
-    fn throwErr(self: *ParseContext, err: ParseError, message: ?[]u8) ParseError {
+    fn throwErr(self: *ParseContext, err: ParseError, message: ?[]u8) ParseError!noreturn {
         self.err = .{ .error_type = err, .message = message, .input = self.input };
         return err;
     }
 
     fn nextOrThrow(self: *ParseContext) ParseError!u8 {
-        return self.cursor.next() orelse self.throwErr(ParseError.UnexpectedEOF, null);
+        return self.cursor.next() orelse try self.throwErr(ParseError.UnexpectedEOF, null);
     }
 
     fn peekOrThrow(self: *ParseContext) ParseError!u8 {
-        return self.cursor.peek() orelse self.throwErr(ParseError.UnexpectedEOF, null);
+        return self.cursor.peek() orelse try self.throwErr(ParseError.UnexpectedEOF, null);
     }
 
     fn consumeSequence(self: *ParseContext, seq: []const u8) ParseError!void {
@@ -224,7 +224,7 @@ const ParseContext = struct {
     fn consumeChar(self: *ParseContext, char: Character) ParseOrAllocError!void {
         const byte = try self.peekOrThrow();
         if (byte != char.toByte()) {
-            return self.throwErr(ParseError.UnexpectedToken, try jerror.formatExpectMessage(self.error_msg_allocator, &[_]Character{char}, byte));
+            try self.throwErr(ParseError.UnexpectedToken, try jerror.formatExpectMessage(self.error_msg_allocator, &[_]Character{char}, byte));
         }
         self.cursor.skip(1);
     }
@@ -248,15 +248,15 @@ const ParseContext = struct {
             .u => {
                 self.cursor.skip(1);
                 for (0..4) |offset| {
-                    const hexDigit = self.cursor.peekOffset(offset) orelse return self.throwErr(ParseError.UnexpectedEOF, null);
+                    const hexDigit = self.cursor.peekOffset(offset) orelse try self.throwErr(ParseError.UnexpectedEOF, null);
                     if (!Character.fromByte(hexDigit).isHex()) {
                         const message = try std.fmt.allocPrint(self.error_msg_allocator, "expected an hex value, but got '{c}'", .{byte});
-                        return self.throwErr(ParseError.InvalidUnicodeSequence, message);
+                        try self.throwErr(ParseError.InvalidUnicodeSequence, message);
                     }
                 }
                 self.cursor.skip(4);
             },
-            else => return self.throwErr(ParseError.InvalidUnicodeSequence, try jerror.formatExpectMessage(self.error_msg_allocator, expected_chars, byte)),
+            else => try self.throwErr(ParseError.InvalidUnicodeSequence, try jerror.formatExpectMessage(self.error_msg_allocator, expected_chars, byte)),
         }
     }
 
@@ -269,7 +269,7 @@ const ParseContext = struct {
                 .zero, .one, .two,   .three, .four,
                 .five, .six, .seven, .eight, .nine,
             };
-            return self.throwErr(ParseError.UnexpectedToken, try jerror.formatExpectMessage(self.error_msg_allocator, expected, byte));
+            try self.throwErr(ParseError.UnexpectedToken, try jerror.formatExpectMessage(self.error_msg_allocator, expected, byte));
         }
         self.cursor.skip(1);
     }
@@ -298,7 +298,7 @@ const ParseContext = struct {
 
     fn incrementAndGuardDepth(self: *ParseContext, depth: u16) ParseError!u16 {
         const incremented_depth = depth + 1;
-        if (depth > self.options.max_depth) return self.throwErr(ParseError.MaxDepthReached, null);
+        if (depth > self.options.max_depth) try self.throwErr(ParseError.MaxDepthReached, null);
         return incremented_depth;
     }
 
@@ -324,7 +324,7 @@ fn parseObjectUnordered(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.
     var map = try std.StringArrayHashMapUnmanaged(value.Value).init(ctx.arena_alloc.allocator(), &value.empty_keys_slice, &value.empty_values_slice);
     ctx.consumeWhitespace();
     if (try ctx.peekOrThrow() == Character.rightBrace.toByte()) {
-        return value.Object{.unordered = map};
+        return value.Object{ .unordered = map };
     }
     while (true) {
         const key = try parseString(ctx, StringType.value);
@@ -345,7 +345,7 @@ fn parseObjectUnordered(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.
         }
     }
 
-    return value.Object{.unordered = map};
+    return value.Object{ .unordered = map };
 }
 
 fn parseObjectOrdered(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.Object {
@@ -354,7 +354,7 @@ fn parseObjectOrdered(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.Ob
     var map_builder = try collection.OrderedStringHashMapBuilder(value.Value).init(ctx.arena_alloc.allocator());
     ctx.consumeWhitespace();
     if (try ctx.peekOrThrow() == Character.rightBrace.toByte()) {
-        return value.Object{.ordered = try map_builder.freeze()};
+        return value.Object{ .ordered = try map_builder.freeze() };
     }
     while (true) {
         const key = try parseString(ctx, StringType.value);
@@ -375,7 +375,7 @@ fn parseObjectOrdered(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.Ob
         }
     }
 
-    return value.Object{.ordered = try map_builder.freeze()};
+    return value.Object{ .ordered = try map_builder.freeze() };
 }
 
 fn parseArray(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.Array {
@@ -414,11 +414,13 @@ fn parseString(ctx: *ParseContext, string_type: StringType) ParseOrAllocError!va
     try ctx.consumeChar(Character.doubleQuotes);
     const start_index = ctx.cursor.pos;
     while (true) {
-        const byte = try ctx.peekOrThrow();
-        if (byte == Character.doubleQuotes.toByte()) {
+        const char = Character.fromByte(try ctx.peekOrThrow());
+        if (char.isControlCharacter()) {
+            try ctx.throwErr(ParseError.InputTooLong, null);
+        } else if (char == Character.doubleQuotes) {
             try ctx.consumeChar(Character.doubleQuotes);
             break;
-        } else if (byte == Character.backwardSlash.toByte()) {
+        } else if (char == Character.backwardSlash) {
             try ctx.consumeEscapeSequence();
         } else {
             ctx.cursor.skip(1);
@@ -427,8 +429,8 @@ fn parseString(ctx: *ParseContext, string_type: StringType) ParseOrAllocError!va
     const end_index = ctx.cursor.pos - 1;
     const length = end_index - start_index;
     switch (string_type) {
-        .key => if (length > ctx.options.max_key_length) return ctx.throwErr(ParseError.KeyTooLong, null),
-        .value => if (length > ctx.options.max_string_value_length) return ctx.throwErr(ParseError.StringValueTooLong, null),
+        .key => if (length > ctx.options.max_key_length) try ctx.throwErr(ParseError.KeyTooLong, null),
+        .value => if (length > ctx.options.max_string_value_length) try ctx.throwErr(ParseError.StringValueTooLong, null),
     }
     return ctx.cursor.input[start_index..end_index];
 }
@@ -438,7 +440,7 @@ fn validateHexDigit(ctx: *ParseContext, byte: u8) ParseError!void {
         Character.zero.toByte()...Character.nine.to, Character.a...Character.f, Character.A...Character.F => {},
         else => {
             const message = std.fmt.allocPrint(ctx.error_msg_allocator, "expected an hex value, but got '{c}'", .{byte});
-            return ctx.throwErr(ParseError.InvalidUnicodeSequence, message);
+            try ctx.throwErr(ParseError.InvalidUnicodeSequence, message);
         },
     };
 }
@@ -467,7 +469,7 @@ fn parseNum(ctx: *ParseContext) ParseOrAllocError!value.Value {
 
     const int_value = std.fmt.parseInt(i64, sequence, 10) catch {
         const float_value = std.fmt.parseFloat(f64, sequence) catch {
-            return ctx.throwErr(ParseError.InvalidValue, null);
+            try ctx.throwErr(ParseError.InvalidValue, null);
         };
         return value.Value{ .float = float_value };
     };
@@ -489,18 +491,18 @@ fn parseValue(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.Value {
         .leftBracket => value.Value{ .array = try parseArray(ctx, depth) },
         .leftBrace => value.Value{ .object = try parseObject(ctx, depth) },
         .t => {
-            ctx.consumeSequence("true") catch |err| return ctx.throwErr(err, null);
+            ctx.consumeSequence("true") catch |err| try ctx.throwErr(err, null);
             return value.Value{ .bool = true };
         },
         .f => {
-            ctx.consumeSequence("false") catch |err| return ctx.throwErr(err, null);
+            ctx.consumeSequence("false") catch |err| try ctx.throwErr(err, null);
             return value.Value{ .bool = false };
         },
         .n => {
-            ctx.consumeSequence("null") catch |err| return ctx.throwErr(err, null);
+            ctx.consumeSequence("null") catch |err| try ctx.throwErr(err, null);
             return value.Value{ .null = {} };
         },
         .doubleQuotes => value.Value{ .string = try parseString(ctx, StringType.value) },
-        else => return ctx.throwErr(ParseError.UnexpectedToken, try jerror.formatExpectMessage(ctx.error_msg_allocator, expected_chars, byte)),
+        else => try ctx.throwErr(ParseError.UnexpectedToken, try jerror.formatExpectMessage(ctx.error_msg_allocator, expected_chars, byte)),
     };
 }

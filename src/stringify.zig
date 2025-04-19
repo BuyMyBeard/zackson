@@ -79,8 +79,26 @@ fn appendBool(boolean: bool, list: *std.ArrayListAligned(u8, null)) AllocError!v
 
 fn appendString(string: []const u8, list: *std.ArrayListAligned(u8, null)) AllocError!void {
     try appendChar(Character.doubleQuotes, list);
-    try list.appendSlice(string);
+    try sanitizeAndAppend(string, list);
     try appendChar(Character.doubleQuotes, list);
+}
+
+fn sanitizeAndAppend(string: []const u8, list: *std.ArrayListAligned(u8, null)) AllocError!void {
+    for(string) |byte| {
+        const char = Character.fromByte(byte);
+        std.debug.print("{d}\n", .{byte});
+        switch(char) {
+            .doubleQuotes,
+            .backwardSlash => {
+                try appendChar(Character.backwardSlash, list);
+                std.debug.print("Found character to escape", .{});
+            },
+            else => {
+
+            },
+        }
+        try list.append(byte);
+    }
 }
 
 const IterType = union(enum) {
