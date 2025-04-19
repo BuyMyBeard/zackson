@@ -60,7 +60,7 @@ pub fn expectEqualJsonValue(expected: Value, actual: Value) !void {
 }
 
 test "Parsing Simple" {
-    const json_string: []const u8 = "{\"key1\": \"value\", \"key2\": true, \"key3\": {}}";
+    const json_string: []const u8 = "[123, 0.5223, 10e10]";
 
     const result = parser.parse(json_string, .{}) catch |err| {
         std.debug.panic("{!}\n", .{err});
@@ -81,7 +81,10 @@ test "Parsing Simple" {
             defer testing.allocator.free(string);
             std.debug.print("{s}", .{string});
         },
-        .failure => |err| return err.error_info.error_type,
+        .failure => |err| {
+            try err.error_info.printError();
+            return err.error_info.error_type;
+        },
     }
 }
 

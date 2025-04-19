@@ -164,10 +164,13 @@ pub const Character = enum(u8) {
     }
 
     pub fn isDigitOrMinus(self: Character) bool {
+        return self.isDigit() or self == Character.minus;
+    }
+
+    pub fn isDigit(self: Character) bool {
         return switch(self) {
             .zero, .one, .two, .three, .four,
-            .five, .six, .seven, .eight, .nine,
-            .minus => true,
+            .five, .six, .seven, .eight, .nine => true,
             else => false,
         };
     }

@@ -210,10 +210,20 @@ const ParseContext = struct {
     }
 
     fn consumeChar(self: *ParseContext, char: Character) ParseOrAllocError!void {
-        const byte = try self.nextOrThrow();
+        const byte = try self.peekOrThrow();
         if (byte != char.toByte()) {
             return self.throwErr(ParseError.UnexpectedToken, try jerror.formatExpectMessage(self.error_msg_allocator, &[_]Character{char}, byte));
         }
+        self.cursor.skip(1);
+    }
+
+    fn maybeConsumeChar(self: *ParseContext, char: Character) bool {
+        const byte = self.cursor.peek() orelse return false;
+        if (byte == char.toByte()) {
+            self.cursor.skip(1);
+            return true;
+        }
+        return false;
     }
 
     fn consumeEscapeSequence(self: *ParseContext) ParseOrAllocError!void {
@@ -236,6 +246,31 @@ const ParseContext = struct {
             },
             else => return self.throwErr(ParseError.InvalidUnicodeSequence, try jerror.formatExpectMessage(self.error_msg_allocator, expected_chars, byte)),
         }
+    }
+
+    fn consumeDigit(self: *ParseContext) ParseOrAllocError!void {
+        const byte = try self.peekOrThrow();
+        const char = Character.fromByte(byte);
+
+        if (!char.isDigit()) {
+            const expected = &[_]Character {
+                .zero, .one, .two, .three, .four,
+                .five, .six, .seven, .eight, .nine,
+            };
+            return self.throwErr(ParseError.UnexpectedToken, try jerror.formatExpectMessage(self.error_msg_allocator, expected, byte));
+        }
+        self.cursor.skip(1);
+    }
+
+    fn maybeConsumeDigit(self: *ParseContext) bool {
+        const byte = self.cursor.peek() orelse return false;
+        const char = Character.fromByte(byte);
+
+        if (!char.isDigit()) {
+            return false;
+        }
+        self.cursor.skip(1);
+        return true;
     }
 
     fn consumeWhitespace(self: *ParseContext) void {
@@ -297,14 +332,13 @@ fn parseObject(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.Object {
 fn parseArray(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.Array {
     const incremented_depth = try ctx.incrementAndGuardDepth(depth);
     try ctx.consumeChar(Character.leftBracket);
-    var list = std.ArrayListAligned(value.Value, null).init(ctx.arena_alloc.allocator());
     ctx.consumeWhitespace();
+    var list = std.ArrayListAligned(value.Value, null).init(ctx.arena_alloc.allocator());
     if (try ctx.peekOrThrow() == Character.rightBrace.toByte()) {
         return list.toOwnedSlice();
     }
 
     while (true) {
-        ctx.consumeWhitespace();
         const val = try parseValue(ctx, incremented_depth);
         try list.append(val);
         ctx.consumeWhitespace();
@@ -360,8 +394,36 @@ fn validateHexDigit(ctx: *ParseContext, byte: u8) ParseError!void {
     };
 }
 
-fn parseNum(_: *ParseContext) ParseError!value.Value {
-    unreachable;
+fn parseNum(ctx: *ParseContext) ParseOrAllocError!value.Value {
+    const start_index = ctx.cursor.pos;
+    _ = ctx.maybeConsumeChar(Character.minus);
+    const firstDigitByte = try ctx.peekOrThrow();
+    const firstDigit = Character.fromByte(firstDigitByte);
+    try ctx.consumeDigit();
+
+    if (firstDigit != Character.zero) {
+        while (ctx.maybeConsumeDigit()) {}
+    }
+    if (ctx.maybeConsumeChar(Character.dot)) {
+        while (ctx.maybeConsumeDigit()) {}
+    }
+    if (ctx.maybeConsumeChar(Character.e) or ctx.maybeConsumeChar(Character.E)) {
+        if (!ctx.maybeConsumeChar(Character.minus)) {
+            _ = ctx.maybeConsumeChar(Character.plus);
+        }
+        while (ctx.maybeConsumeDigit()) {}
+    }
+    const endIndex = ctx.cursor.pos;
+    const sequence = ctx.input[start_index..endIndex];
+
+    const intValue = std.fmt.parseInt(i64, sequence, 10) catch {
+        const floatValue = std.fmt.parseFloat(f64, sequence) catch {
+            return ctx.throwErr(ParseError.InvalidValue, null);
+        };
+        return value.Value{.float = floatValue};
+    };
+
+    return value.Value{.int = intValue};
 }
 
 fn parseValue(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.Value {
