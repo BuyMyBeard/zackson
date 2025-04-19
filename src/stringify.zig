@@ -6,20 +6,48 @@ const Array = jsonvalue.Array;
 const AllocError = @import("error.zig").AllocError;
 const Character = @import("character.zig").Character;
 
-pub const FormatStyle = enum{
-    pretty, 
+/// Controls the formatting style of the JSON output.
+pub const FormatStyle = enum {
+    /// Pretty-printed output with indentation and newlines.
+    ///
+    /// Use this when generating human-readable JSON (e.g., for logs, config files, or debugging).
+    pretty,
+
+    /// Compact output with no unnecessary whitespace.
+    ///
+    /// Use this when minimizing size is important (e.g., for APIs, storage, or transmission).
     compact,
 };
 
+
+/// Options for customizing the behavior of JSON stringification.
 pub const StringifyOptions = struct {
+    /// Output formatting style (`pretty` or `compact`).
+    ///
+    /// Defaults to `.compact`.
     format: FormatStyle = .compact,
-    indentation: u3 = 2,
-    
+
+    /// Number of spaces used per indentation level when `format` is `.pretty`.
+    ///
+    /// This must be a value between `0` and `15` (inclusive).
+    /// Defaults to `2`.
+    indentation: u4 = 2,
+
+    /// Returns `true` if the formatter is set to pretty-print mode.
     fn isPretty(self: StringifyOptions) bool {
         return self.format == FormatStyle.pretty;
     }
 };
 
+/// Converts a parsed JSON `Value` back into a valid JSON string.
+///
+/// - `alloc`: The allocator used to allocate the resulting string.
+/// - `value`: The JSON value to stringify.
+/// - `options`: Stringify behavior customization (pretty/compact, indentation).
+///
+/// Returns: An allocated UTF-8 encoded JSON string. The caller is responsible for freeing it.
+///
+/// May fail with `AllocError.OutOfMemory` if memory allocation fails.
 pub fn stringify(alloc: std.mem.Allocator, value: Value, options: StringifyOptions) AllocError![]const u8 {
     var list = std.ArrayListAligned(u8, null).init(alloc);
     try appendDecodedValue(value, &list, 0, &options);

@@ -7,41 +7,95 @@ const jerror = @import("error.zig");
 const ParseError = jerror.ParseError;
 const ParseOrAllocError = jerror.ParseOrAllocError;
 
+
+/// Represents the result of a JSON parsing operation.
+///
+/// This tagged union separates parsing **success**, **structured failures**, and
+/// **unrecoverable allocation errors** (which are thrown separately via `AllocError`).
 pub const JsonParseResult = union(enum) {
+    /// Parsing succeeded.
+    ///
+    /// The parsed value is available in `value`, and the arena allocator used for all
+    /// internal allocations is available as `arena`. The caller is responsible for calling `deinit()`.
     success: struct {
         value: value.Value,
         arena: std.heap.ArenaAllocator,
     },
+
+    /// Parsing failed due to a structural or semantic issue (not memory).
+    ///
+    /// Error details such as error type, line/column, and message are stored in `errorInfo`.
+    /// The allocator used to create the error message (if any) is returned for cleanup.
     failure: struct {
         errorInfo: jerror.ParsingErrorInfo,
         allocator: std.mem.Allocator,
     },
 
+    /// Deinitializes the result:
+    /// - If `.success`, deinitializes the arena and frees associated memory.
+    /// - If `.failure`, frees the memory allocated for the error message.
     pub fn deinit(self: *JsonParseResult) void {
         switch (self.*) {
-            .success => |*s| {
-                s.arena.deinit();
-            },
-            .failure => |*f| {
-                f.allocator.free(f.errorInfo);
-            },
+            .success => |*s| s.arena.deinit(),
+            .failure => |*f| f.allocator.free(f.errorInfo),
         }
     }
 };
 
-/// Options for parsing.
+/// Configuration options for controlling JSON parsing behavior.
 pub const ParseOptions = struct {
-    /// The max parsing depth.
+    /// Maximum allowed nesting depth for arrays and objects.
     ///
-    /// If Reached, a ParseError.MaxDepthReached is thrown.
-    maxDepth: ?u16 = 64,
+    /// If this depth is exceeded during parsing,
+    /// a `ParseError.MaxDepthReached` is thrown.
+    ///
+    /// Defaults to 64.
+    maxDepth: u16 = 64,
+
+    /// Maximum size (in bytes) for any parsed string value (e.g. string literals, numbers as strings, etc.).
+    ///
+    /// This limit does **not** apply to object keys — see `maxKeyLength`.
+    /// If exceeded, a `ParseError.StringValueTooLong` is thrown **after** parsing the full string.
+    ///
+    /// Defaults to 16 KB (16_384 bytes).
+    maxStringValueLength: usize = 16_384,
+
+    /// Maximum size (in bytes) for any parsed object key (i.e. field name).
+    ///
+    /// This is enforced after the key is fully parsed.
+    /// If exceeded, a `ParseError.KeyTooLong` is thrown.
+    ///
+    /// Defaults to 256 bytes.
+    maxKeyLength: usize = 256,
+
+    /// Maximum size (in bytes) for the entire input buffer.
+    ///
+    /// Checked once before parsing begins. If the input exceeds this size,
+    /// a `ParseError.InputTooLong` is thrown.
+    ///
+    /// Defaults to 1 MB (1_048_576 bytes).
+    maxInputSize: usize = 1_048_576,
+
+    /// Whether to validate that the input is valid UTF-8.
+    ///
+    /// If enabled and invalid UTF-8 is detected,
+    /// a `ParseError.InvalidUtf8` is thrown.
+    ///
+    /// Defaults to `true`.
+    shouldEnforceUtf8: bool = true,
 };
 
-/// Parses input into a Json value tree.
+/// Parses input into a `Value` tree.
 pub fn parse(input: []const u8, options: ParseOptions) error{OutOfMemory}!JsonParseResult {
-    var ctx = ParseContext.init(input, options.maxDepth);
+    var ctx = ParseContext.init(input, options);
+    if (input.len > options.maxInputSize) {
+        return ctx.throwErr(ParseError.InputTooLong, null);
+    }
+    if (options.shouldEnforceUtf8 and !std.unicode.utf8ValidateSlice(input)) {
+        return ctx.throwErr(ParseError.InvalidUtf8, null);
+    }
     const jsonData = parseValue(&ctx, 0) catch |e| {
-        switch(e) {
+        switch (e) {
             error.OutOfMemory => |outOfMemoryErr| return outOfMemoryErr,
             else => {
                 ctx.arenaAlloc.deinit();
@@ -49,7 +103,7 @@ pub fn parse(input: []const u8, options: ParseOptions) error{OutOfMemory}!JsonPa
                     .errorInfo = ctx.err.?,
                     .allocator = ctx.errorMsgAllocator,
                 } };
-            }
+            },
         }
     };
 
@@ -94,10 +148,10 @@ const ParseContext = struct {
     gpa: std.heap.DebugAllocator(.{}),
     cursor: Cursor,
     input: []const u8,
-    maxDepth: ?u16,
+    options: *const ParseOptions,
     err: ?jerror.ParsingErrorInfo = null,
 
-    pub fn init(input: []const u8, maxDepth: ?u16) ParseContext {
+    pub fn init(input: []const u8, options: ParseOptions) ParseContext {
         var gpa = std.heap.GeneralPurposeAllocator(.{}).init;
         return ParseContext{
             .gpa = gpa,
@@ -105,7 +159,7 @@ const ParseContext = struct {
             .arenaAlloc = std.heap.ArenaAllocator.init(gpa.allocator()),
             .errorMsgAllocator = gpa.allocator(),
             .input = input,
-            .maxDepth = maxDepth,
+            .options = options,
         };
     }
 
@@ -170,16 +224,16 @@ const ParseContext = struct {
             }
         }
     }
+
+    fn incrementAndGuardDepth(self: *ParseContext, depth: u16) ParseError!u16 {
+        const incrementedDepth = depth + 1;
+        if (depth > self.options.maxDepth) self.throwErr(ParseError.MaxDepthReached, null);
+        return incrementedDepth;
+    }
 };
 
-fn guardMaxDepth(ctx: *ParseContext, depth: u16) ParseError!void {
-    if (ctx.maxDepth) |maxDepth| {
-        if (depth > maxDepth) return ctx.throwErr(ParseError.MaxDepthReached, null);
-    }
-}
-
 fn parseObject(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.Object {
-    try guardMaxDepth(ctx, depth);
+    const incrementedDepth = try ctx.incrementAndGuardDepth(depth);
     try ctx.consumeChar(Character.leftBrace);
     var object: value.Object = std.StringHashMap(value.Value).init(ctx.arenaAlloc.allocator());
     ctx.consumeWhitespace();
@@ -187,11 +241,11 @@ fn parseObject(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.Object {
         return object;
     }
     while (true) {
-        const key = try parseString(ctx);
+        const key = try parseString(ctx, StringType.value);
         ctx.consumeWhitespace();
         try ctx.consumeChar(Character.colon);
         ctx.consumeWhitespace();
-        const val = try parseValue(ctx, depth);
+        const val = try parseValue(ctx, incrementedDepth);
         try object.put(key, val);
         ctx.consumeWhitespace();
         if (try ctx.peekOrThrow() == Character.comma.toByte()) {
@@ -209,12 +263,39 @@ fn parseObject(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.Object {
 }
 
 fn parseArray(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.Array {
-    try guardMaxDepth(ctx, depth);
+    const incrementedDepth = try ctx.incrementAndGuardDepth(depth);
+    try ctx.consumeChar(Character.leftBracket);
+    const list = std.ArrayListAligned(value.Value, null).init(ctx.arenaAlloc.allocator());
     ctx.consumeWhitespace();
-    unreachable;
+    if (try ctx.peekOrThrow() == Character.rightBrace.toByte()) {
+        return list.toOwnedSlice();
+    }
+
+    while (true) {
+        ctx.consumeWhitespace();
+        const val = try parseValue(ctx, incrementedDepth);
+        try list.append(val);
+        ctx.consumeWhitespace();
+        if (try ctx.peekOrThrow() == Character.comma.toByte()) {
+            try ctx.consumeChar(Character.comma);
+            ctx.consumeWhitespace();
+            continue;
+        } else {
+            ctx.consumeWhitespace();
+            try ctx.consumeChar(Character.rightBracket);
+            break;
+        }
+    }
+
+    return list.toOwnedSlice();
 }
 
-fn parseString(ctx: *ParseContext) ParseOrAllocError!value.String {
+const StringType = enum {
+    key,
+    value,
+};
+
+fn parseString(ctx: *ParseContext, stringType: StringType) ParseOrAllocError!value.String {
     try ctx.consumeChar(Character.doubleQuotes);
     const startIndex = ctx.cursor.pos;
     while (true) {
@@ -229,6 +310,11 @@ fn parseString(ctx: *ParseContext) ParseOrAllocError!value.String {
         }
     }
     const endIndex = ctx.cursor.pos - 1;
+    const length = endIndex - startIndex;
+    switch(stringType) {
+        .key => if (ctx.options.maxKeyLength > length) return ctx.throwErr(ParseError.KeyTooLong, null),
+        .value => if (ctx.options.maxStringValueLength > length) return ctx.throwErr(ParseError.StringValueTooLong, null),
+    }
     return ctx.cursor.input[startIndex..endIndex];
 }
 
@@ -257,8 +343,8 @@ fn parseValue(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.Value {
     }
 
     return switch (char) {
-        .leftBracket => value.Value{ .array = try parseArray(ctx, depth + 1) },
-        .leftBrace => value.Value{ .object = try parseObject(ctx, depth + 1) },
+        .leftBracket => value.Value{ .array = try parseArray(ctx, depth) },
+        .leftBrace => value.Value{ .object = try parseObject(ctx, depth) },
         .t => {
             ctx.consumeSequence("true") catch |err| return ctx.throwErr(err, null);
             return value.Value{ .bool = true };
@@ -271,7 +357,7 @@ fn parseValue(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.Value {
             ctx.consumeSequence("null") catch |err| return ctx.throwErr(err, null);
             return value.Value{ .null = {} };
         },
-        .doubleQuotes => value.Value{ .string = try parseString(ctx) },
+        .doubleQuotes => value.Value{ .string = try parseString(ctx, StringType.value) },
         else => return ctx.throwErr(ParseError.UnexpectedToken, try jerror.formatExpectMessage(ctx.errorMsgAllocator, expectedChars, byte)),
     };
 }
