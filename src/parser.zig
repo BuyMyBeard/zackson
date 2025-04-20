@@ -416,7 +416,7 @@ fn parseString(ctx: *ParseContext, string_type: StringType) ParseOrAllocError!va
     while (true) {
         const char = Character.fromByte(try ctx.peekOrThrow());
         if (char.isControlCharacter()) {
-            try ctx.throwErr(ParseError.InputTooLong, null);
+            try ctx.throwErr(ParseError.UnescapedControlCharacter, null);
         } else if (char == Character.doubleQuotes) {
             try ctx.consumeChar(Character.doubleQuotes);
             break;

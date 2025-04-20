@@ -70,7 +70,7 @@ test "Parsing Simple" {
     defer map.deinit(std.testing.allocator);
 
     try map.put(std.testing.allocator, "key1", Value{ .string = "value🙂" });
-    try map.put(std.testing.allocator,"key2", Value{ .bool = true });
+    try map.put(std.testing.allocator, "key2", Value{ .bool = true });
 
     // const expected = Value{.object = map};
 
@@ -153,4 +153,18 @@ test "Character.isHex" {
     try testing.expect(Character.A.isHex());
     try testing.expect(Character.zero.isHex());
     try testing.expect(!Character.leftBrace.isHex());
+}
+
+const ErrSet = error{
+    foo,
+};
+
+fn throw(err_type: ErrSet) ErrSet!noreturn {
+    return err_type;
+}
+
+test "Repro" {
+    throw(ErrSet.foo) catch {
+        std.debug.print("Works properly\n", .{});
+    };
 }

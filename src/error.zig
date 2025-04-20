@@ -25,10 +25,12 @@ pub fn formatExpectMessage(alloc: std.mem.Allocator, characters: []const Charact
     return try std.fmt.allocPrint(alloc, "expected one of '{s}' but got '{c}'", .{ formattedChars, received });
 }
 
-/// Represents structural and semantic parsing errors.
+/// Represents structured JSON parse errors that occur during parsing.
 ///
-/// These errors are **never thrown**. Instead, they are wrapped inside a
-/// `ParsingErrorInfo` and returned via `ParseResult.failure`.
+/// These include syntax violations, semantic errors, and structural limits being exceeded.
+/// `ParseError`s are **thrown internally** to halt control flow,
+/// but are **not bubbled up** from the public `parse()` API:
+/// they are instead captured and returned in the `.failure` variant of `ParseResult`.
 pub const ParseError = error{
     /// Thrown when a token doesn't match the expected grammar.
     UnexpectedToken,
