@@ -36,8 +36,10 @@ pub const ParseResult = union(enum) {
     /// - If `.failure`, frees the memory allocated for the error message.
     pub fn deinit(self: *ParseResult) void {
         switch (self.*) {
-            .success => |*s| s.arena.deinit(),
-            .failure => |*f| f.allocator.free(f.error_info),
+            .success => |s| s.arena.deinit(),
+            .failure => |f| {
+                if (f.error_info.message) |msg| f.allocator.free(msg);
+            },
         }
     }
 };
@@ -124,8 +126,8 @@ pub const ParseOptions = struct {
 /// - `ParseOptions`
 /// - `ParseResult`
 /// - `Value`
-pub fn parse(input: []const u8, options: ParseOptions) error{OutOfMemory}!ParseResult {
-    var ctx = ParseContext.init(input, options);
+pub fn parse(input: []const u8, allocator: std.mem.Allocator, options: ParseOptions) error{OutOfMemory}!ParseResult {
+    var ctx = ParseContext.init(input, allocator, options);
     if (input.len > options.max_input_size) {
         ctx.throwErr(ParseError.InputTooLong, null) catch {};
         return ctx.cleanUpAndGenerateFailureParseResult();
@@ -136,7 +138,10 @@ pub fn parse(input: []const u8, options: ParseOptions) error{OutOfMemory}!ParseR
     }
     const json_data = parseValue(&ctx, 0) catch |e| {
         switch (e) {
-            error.OutOfMemory => |outOfMemoryErr| return outOfMemoryErr,
+            error.OutOfMemory => {
+                ctx.deinit();
+                return error.OutOfMemory;
+            },
             else => {
                 return ctx.cleanUpAndGenerateFailureParseResult();
             },
@@ -181,26 +186,32 @@ const Cursor = struct {
 const ParseContext = struct {
     arena_alloc: std.heap.ArenaAllocator,
     error_msg_allocator: std.mem.Allocator,
-    gpa: std.heap.DebugAllocator(.{}),
     cursor: Cursor,
     input: []const u8,
     options: ParseOptions,
     err: ?jerror.ParsingErrorInfo = null,
 
-    pub fn init(input: []const u8, options: ParseOptions) ParseContext {
-        var gpa = std.heap.GeneralPurposeAllocator(.{}).init;
+    pub fn init(input: []const u8, allocator: std.mem.Allocator, options: ParseOptions) ParseContext {
         return ParseContext{
-            .gpa = gpa,
             .cursor = Cursor{ .input = input },
-            .arena_alloc = std.heap.ArenaAllocator.init(gpa.allocator()),
-            .error_msg_allocator = gpa.allocator(),
+            .arena_alloc = std.heap.ArenaAllocator.init(allocator),
+            .error_msg_allocator = allocator,
             .input = input,
             .options = options,
         };
     }
 
-    fn throwErr(self: *ParseContext, err: ParseError, message: ?[]u8) ParseError!noreturn {
-        self.err = .{ .error_type = err, .message = message, .input = self.input };
+    pub fn deinit(self: *ParseContext) void {
+        self.arena_alloc.deinit();
+    }
+
+    fn throwErr(self: *ParseContext, err: ParseError, message: ?[]const u8) ParseError!noreturn {
+        self.err = .{ 
+            .error_type = err,
+            .message = message,
+            .input = self.input,
+            .pos = self.cursor.pos,
+        };
         return err;
     }
 
@@ -238,23 +249,73 @@ const ParseContext = struct {
         return false;
     }
 
-    fn consumeEscapeSequence(self: *ParseContext) ParseOrAllocError!void {
+    fn parseHex16(self: *ParseContext) !u16 {
+        for (0..4) |i| {
+            const digit = self.cursor.peekOffset(i) orelse return try self.throwErr(ParseError.UnexpectedEOF, null);
+            if (!Character.fromByte(digit).isHex()) {
+                return try self.throwErr(ParseError.InvalidUnicodeSequence, null);
+            }
+        }
+        const start = self.cursor.pos;
+        self.cursor.skip(4);
+        return std.fmt.parseInt(u16, self.cursor.input[start .. start + 4], 16) catch unreachable;
+    }
+
+    fn decodeEscapedUnicode(self: *ParseContext, buf: []u8) ParseOrAllocError![]const u8 {
+        var codepoint: u21 = try self.parseHex16();
+
+        if (codepoint >= 0xD800 and codepoint <= 0xDBFF) {
+            try self.consumeChar(Character.backwardSlash);
+            try self.consumeChar(Character.u);
+            const low = try self.parseHex16();
+            if (!(low >= 0xDC00 and low <= 0xDFFF)) {
+                return try self.throwErr(ParseError.InvalidUnicodeSequence, "expected low surrogate after high surrogate");
+            }
+            codepoint = 0x10000 + ((@as(u21, codepoint - 0xD800) << 10) | (low - 0xDC00));
+        } else if (codepoint >= 0xDC00 and codepoint <= 0xDFFF) {
+            return try self.throwErr(ParseError.InvalidUnicodeSequence, "unexpected low surrogate without high surrogate");
+        }
+
+        const len = std.unicode.utf8Encode(codepoint, buf) catch return try self.throwErr(ParseError.InvalidUtf8, null);
+        return buf[0..len];
+    }
+    /// Caller must ensure `buf.len >= 4`. Behavior is undefined otherwise.
+    fn consumeEscapeSequence(self: *ParseContext, buf: []u8) ParseOrAllocError![]const u8 {
+        std.debug.assert(buf.len >= 4);
         try self.consumeChar(Character.backwardSlash);
         const byte = try self.peekOrThrow();
         const char = Character.fromByte(byte);
         const expected_chars = &[_]Character{ .doubleQuotes, .forwardSlash, .backwardSlash, .b, .f, .n, .r, .t, .u };
         switch (char) {
-            .doubleQuotes, .forwardSlash, .backwardSlash, .b, .f, .n, .r, .t => self.cursor.skip(1),
+            .doubleQuotes,
+            .forwardSlash,
+            .backwardSlash => {
+                self.cursor.skip(1);
+                return char.toSlice(buf);
+            },
+            .b => {
+                self.cursor.skip(1);
+                return Character.backspace.toSlice(buf);
+            },
+            .f => {
+                self.cursor.skip(1);
+                return Character.formFeed.toSlice(buf);
+            },
+            .n => {
+                self.cursor.skip(1);
+                return Character.newline.toSlice(buf);
+            },
+            .r => {
+                self.cursor.skip(1);
+                return Character.cariageReturn.toSlice(buf);
+            }, 
+            .t => {
+                self.cursor.skip(1);
+                return Character.tab.toSlice(buf);
+            },
             .u => {
                 self.cursor.skip(1);
-                for (0..4) |offset| {
-                    const hexDigit = self.cursor.peekOffset(offset) orelse try self.throwErr(ParseError.UnexpectedEOF, null);
-                    if (!Character.fromByte(hexDigit).isHex()) {
-                        const message = try std.fmt.allocPrint(self.error_msg_allocator, "expected an hex value, but got '{c}'", .{byte});
-                        try self.throwErr(ParseError.InvalidUnicodeSequence, message);
-                    }
-                }
-                self.cursor.skip(4);
+                return try self.decodeEscapedUnicode(buf);
             },
             else => try self.throwErr(ParseError.InvalidUnicodeSequence, try jerror.formatExpectMessage(self.error_msg_allocator, expected_chars, byte)),
         }
@@ -412,6 +473,7 @@ const StringType = enum {
 
 fn parseString(ctx: *ParseContext, string_type: StringType) ParseOrAllocError!value.String {
     try ctx.consumeChar(Character.doubleQuotes);
+    var list = std.ArrayList(u8).init(ctx.arena_alloc.allocator());
     const start_index = ctx.cursor.pos;
     while (true) {
         const char = Character.fromByte(try ctx.peekOrThrow());
@@ -421,9 +483,12 @@ fn parseString(ctx: *ParseContext, string_type: StringType) ParseOrAllocError!va
             try ctx.consumeChar(Character.doubleQuotes);
             break;
         } else if (char == Character.backwardSlash) {
-            try ctx.consumeEscapeSequence();
+            var buf:[4]u8 = undefined;
+            const utf8_slice = try ctx.consumeEscapeSequence(&buf);
+            try list.appendSlice(utf8_slice);
         } else {
             ctx.cursor.skip(1);
+            try list.append(char.toByte());
         }
     }
     const end_index = ctx.cursor.pos - 1;
@@ -432,7 +497,7 @@ fn parseString(ctx: *ParseContext, string_type: StringType) ParseOrAllocError!va
         .key => if (length > ctx.options.max_key_length) try ctx.throwErr(ParseError.KeyTooLong, null),
         .value => if (length > ctx.options.max_string_value_length) try ctx.throwErr(ParseError.StringValueTooLong, null),
     }
-    return ctx.cursor.input[start_index..end_index];
+    return list.toOwnedSlice();
 }
 
 fn validateHexDigit(ctx: *ParseContext, byte: u8) ParseError!void {

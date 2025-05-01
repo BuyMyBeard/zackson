@@ -3,8 +3,12 @@ const jsonvalue = @import("value.zig");
 const Value = jsonvalue.Value;
 const Object = jsonvalue.Object;
 const Array = jsonvalue.Array;
-const AllocError = @import("error.zig").AllocError;
+const jerror = @import("error.zig");
+const AllocError = jerror.AllocError;
+const StringifyError = jerror.StringifyError;
+const StringifyOrAllocError = jerror.StringifyOrAllocError;
 const Character = @import("character.zig").Character;
+const EscapeSequence = @import("character.zig").EscapeSequence;
 const collection = @import("collection.zig");
 
 /// Controls the formatting style of the JSON output.
@@ -48,7 +52,7 @@ pub const StringifyOptions = struct {
 /// Returns: An allocated UTF-8 encoded JSON string. The caller is responsible for freeing it.
 ///
 /// May fail with `AllocError.OutOfMemory` if memory allocation fails.
-pub fn stringify(alloc: std.mem.Allocator, value: Value, options: StringifyOptions) AllocError![]const u8 {
+pub fn stringify(alloc: std.mem.Allocator, value: Value, options: StringifyOptions) StringifyOrAllocError![]const u8 {
     var list = std.ArrayListAligned(u8, null).init(alloc);
     try appendDecodedValue(value, &list, 0, &options);
     if (options.isPretty()) {
@@ -57,7 +61,7 @@ pub fn stringify(alloc: std.mem.Allocator, value: Value, options: StringifyOptio
     return try list.toOwnedSlice();
 }
 
-fn appendDecodedValue(value: Value, list: *std.ArrayListAligned(u8, null), indent: u16, options: *const StringifyOptions) AllocError!void {
+fn appendDecodedValue(value: Value, list: *std.ArrayListAligned(u8, null), indent: u16, options: *const StringifyOptions) StringifyOrAllocError!void {
     switch (value) {
         .object => |object| try appendObject(object, list, indent, options),
         .array => |array| try appendArray(array, list, indent, options),
@@ -77,28 +81,34 @@ fn appendBool(boolean: bool, list: *std.ArrayListAligned(u8, null)) AllocError!v
     }
 }
 
-fn appendString(string: []const u8, list: *std.ArrayListAligned(u8, null)) AllocError!void {
+fn appendString(string: []const u8, list: *std.ArrayListAligned(u8, null)) StringifyOrAllocError!void {
     try appendChar(Character.doubleQuotes, list);
-    try sanitizeAndAppend(string, list);
+    try escapeAndAppend(string, list);
     try appendChar(Character.doubleQuotes, list);
 }
 
-fn sanitizeAndAppend(string: []const u8, list: *std.ArrayListAligned(u8, null)) AllocError!void {
-    for(string) |byte| {
-        const char = Character.fromByte(byte);
-        std.debug.print("{d}\n", .{byte});
-        switch(char) {
-            .doubleQuotes,
-            .backwardSlash => {
-                try appendChar(Character.backwardSlash, list);
-                std.debug.print("Found character to escape", .{});
-            },
-            else => {
-
-            },
+fn escapeAndAppend(string: []const u8, list: *std.ArrayListAligned(u8, null)) StringifyOrAllocError!void {
+    const utf8_view = try std.unicode.Utf8View.init(string);
+    var iter = utf8_view.iterator();
+    var buf: [12]u8 = undefined;
+    while(iter.nextCodepoint()) |cp| {
+        const charOrNull = Character.fromCodepoint(cp);
+        if (charOrNull) |char| {
+            try list.appendSlice(char.toEscapedSlice(&buf));
+        } else if (cp <= 0xFFFF) {
+            try list.appendSlice(std.fmt.bufPrint(&buf, "\\u{X:0>4}", .{cp}) catch unreachable);
+        } else {
+            try list.appendSlice(writeSurrogatePair(cp, &buf));
         }
-        try list.append(byte);
     }
+}
+
+/// Caller must ensure `buf.len >= 12`. Behavior is undefined otherwise.
+fn writeSurrogatePair(cp: u21, buf: []u8) []const u8 {
+    std.debug.assert(buf.len >= 12);
+    const high = 0xD800 + ((cp - 0x10000) >> 10);
+    const low  = 0xDC00 + (cp & 0x3FF);
+    return std.fmt.bufPrint(buf, "\\u{X:0>4}\\u{X:0>4}", .{high, low}) catch unreachable;
 }
 
 const IterType = union(enum) {
@@ -113,7 +123,7 @@ const IterType = union(enum) {
     }
 };
 
-fn appendObject(object: Object, list: *std.ArrayListAligned(u8, null), indent: u16, options: *const StringifyOptions) AllocError!void {
+fn appendObject(object: Object, list: *std.ArrayListAligned(u8, null), indent: u16, options: *const StringifyOptions) StringifyOrAllocError!void {
     const incremented_indent = indent + options.indentation;
     var iterator: IterType = switch(object) {
         .ordered => |map| IterType{.ordered = map.iter()},
@@ -145,7 +155,7 @@ fn appendObject(object: Object, list: *std.ArrayListAligned(u8, null), indent: u
     try appendChar(Character.rightBrace, list);
 }
 
-fn appendArray(array: Array, list: *std.ArrayListAligned(u8, null), indent: u16, options: *const StringifyOptions) AllocError!void {
+fn appendArray(array: Array, list: *std.ArrayListAligned(u8, null), indent: u16, options: *const StringifyOptions) StringifyOrAllocError!void {
     const incremented_indent = indent + options.indentation;
     try appendChar(Character.leftBracket, list);
     var index: usize = 0;

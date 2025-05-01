@@ -193,4 +193,37 @@ pub const Character = enum(u8) {
 
         return list.toOwnedSlice();
     }
+
+    /// Caller must ensure `buf.len >= 1`. Behavior is undefined otherwise.
+    pub fn toSlice(self: Character, buf: []u8) []const u8 {
+        std.debug.assert(buf.len >= 1);
+        buf[0] = self.toByte();
+        return buf[0..1];
+    }
+    /// Caller must ensure `buf.len >= 2`. Behavior is undefined otherwise.
+    pub fn toEscapedSlice(self: Character, buf: []u8) []const u8 {
+        std.debug.assert(buf.len >= 2);
+        return switch(self) {
+            .backspace => "\\b",
+            .formFeed => "\\f",
+            .newline => "\\n",
+            .cariageReturn => "\\r",
+            .tab => "\\t",
+            else => |char| {
+                if (char.isControlCharacter()) {
+                    return std.fmt.bufPrint(buf, "\\u{X:0>4}", .{char.toByte()}) catch unreachable;
+                } else {
+                    return char.toSlice(buf);
+                }
+            }
+        };
+    }
+
+    pub fn fromCodepoint(cp: u21) ?Character {
+        if (cp <= Character.del.toByte()) {
+            const byte : u8 = @intCast(cp);
+            return Character.fromByte(byte);
+        }
+        return null;
+    }
 };

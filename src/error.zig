@@ -63,6 +63,10 @@ pub const ParseError = error{
     UnescapedControlCharacter,
 };
 
+pub const StringifyError = error{
+    InvalidUtf8,
+};
+
 /// Represents unrecoverable allocation failures during parsing.
 ///
 /// These errors are **bubbled up directly** via Zig’s error system,
@@ -77,6 +81,8 @@ pub const AllocError = error{
 /// - `ParseError`: structural, semantic, or limit-related JSON errors (returned in `.failure`)
 /// - `AllocError`: memory allocation failures (thrown directly)
 pub const ParseOrAllocError = (ParseError || AllocError);
+
+pub const StringifyOrAllocError = (StringifyError || AllocError);
 
 pub const Offset = struct {
     column: usize,
@@ -118,6 +124,7 @@ pub const ParsingErrorInfo = struct {
     ///
     /// May fail with `OutOfMemory` if allocation for the caret buffer fails.
     pub fn printError(self: *const ParsingErrorInfo) error{OutOfMemory}!void {
+        std.debug.print("{}\n", .{self.pos});
         const offset = self.getOffset();
         if (self.message == null) {
             std.debug.print("{!} at position {}:{}\n", .{ self.error_type, offset.column, offset.column });
@@ -136,11 +143,22 @@ pub const ParsingErrorInfo = struct {
             i += 1;
         }
         const snippet = self.input[start_col..end_col];
-        const alloc = std.heap.page_allocator;
-        const caret_space_buffer = try alloc.alloc(u8, offset.column - start_col);
-        defer alloc.free(caret_space_buffer);
-        @memset(caret_space_buffer, Character.space.toByte());
-
-        std.debug.print("\n{s}\n{s}^\n", .{ snippet, caret_space_buffer });
+        var gpa = std.heap.GeneralPurposeAllocator(.{}).init;
+        var list = std.ArrayListAligned(u8, 64).init(gpa.allocator());
+        defer list.deinit();
+        for (snippet) |byte| {
+            if (byte == Character.backwardSlash.toByte()) {
+                try list.append(Character.backwardSlash.toByte());
+            }
+            try list.append(byte);
+        }
+        try list.append(Character.newline.toByte());
+        const space_count = offset.column - start_col;
+        var j: usize = 0;
+        while(j < space_count) {
+            j += 1;
+            try list.append(Character.space.toByte());
+        }
+        std.debug.print("\n{s}^\n", .{ list.items });
     }
 };
