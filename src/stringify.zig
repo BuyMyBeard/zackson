@@ -8,8 +8,6 @@ const AllocError = jerror.AllocError;
 const StringifyError = jerror.StringifyError;
 const StringifyOrAllocError = jerror.StringifyOrAllocError;
 const Character = @import("character.zig").Character;
-const EscapeSequence = @import("character.zig").EscapeSequence;
-const collection = @import("collection.zig");
 
 /// Controls the formatting style of the JSON output.
 pub const FormatStyle = enum {
@@ -111,28 +109,12 @@ fn writeSurrogatePair(cp: u21, buf: []u8) []const u8 {
     return std.fmt.bufPrint(buf, "\\u{X:0>4}\\u{X:0>4}", .{high, low}) catch unreachable;
 }
 
-const IterType = union(enum) {
-    unordered: jsonvalue.UnorderedStringValueHashMap.Iterator,
-    ordered: collection.OrderedStringHashMapIterator(Value),
-
-    pub fn next(self: *IterType) ?collection.Entry(Value) {
-        return switch(self.*)  {
-            .ordered => |*iter| iter.next(),
-            .unordered => |*iter| iter.next(),
-        };
-    }
-};
-
 fn appendObject(object: Object, list: *std.ArrayListAligned(u8, null), indent: u16, options: *const StringifyOptions) StringifyOrAllocError!void {
     const incremented_indent = indent + options.indentation;
-    var iterator: IterType = switch(object) {
-        .ordered => |map| IterType{.ordered = map.iter()},
-        .unordered => |map| IterType{.unordered = map.iterator()},
-    };
+    var iterator = object.iterator();
     try appendChar(Character.leftBrace, list);
     var index: usize = 0;
-    while (true) {
-        const entry = iterator.next() orelse break;
+    while (iterator.next()) |entry| {
         if (index != 0) {
             try appendChar(Character.comma, list);
         }

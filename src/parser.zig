@@ -6,7 +6,6 @@ const Character = @import("character.zig").Character;
 const jerror = @import("error.zig");
 const ParseError = jerror.ParseError;
 const ParseOrAllocError = jerror.ParseOrAllocError;
-const collection = @import("collection.zig");
 
 /// Represents the result of a JSON parsing operation.
 ///
@@ -42,11 +41,6 @@ pub const ParseResult = union(enum) {
             },
         }
     }
-};
-
-pub const ObjectRepresentation = enum {
-    ordered,
-    unordered,
 };
 
 /// Configuration options for controlling JSON parsing behavior.
@@ -90,12 +84,6 @@ pub const ParseOptions = struct {
     ///
     /// Defaults to `true`.
     should_enforce_utf8: bool = true,
-
-    /// Determines whether parsed JSON objects should preserve key insertion order.
-    /// - `.ordered`: Object fields are stored in an `OrderedStringHashMap`, preserving insertion order.
-    /// - `.unordered`: Object fields are stored in a regular `StringArrayHashMap`, with no order guarantees.
-    /// Default is `.ordered`.
-    object_representation: ObjectRepresentation = .unordered,
 };
 
 /// Parses a UTF-8 JSON input buffer into a structured `Value` tree.
@@ -373,19 +361,12 @@ const ParseContext = struct {
 };
 
 fn parseObject(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.Object {
-    return switch (ctx.options.object_representation) {
-        .ordered => try parseObjectOrdered(ctx, depth),
-        .unordered => try parseObjectUnordered(ctx, depth),
-    };
-}
-
-fn parseObjectUnordered(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.Object {
     const incremented_depth = try ctx.incrementAndGuardDepth(depth);
     try ctx.consumeChar(Character.leftBrace);
     var map = try std.StringArrayHashMapUnmanaged(value.Value).init(ctx.arena_alloc.allocator(), &value.empty_keys_slice, &value.empty_values_slice);
     ctx.consumeWhitespace();
     if (try ctx.peekOrThrow() == Character.rightBrace.toByte()) {
-        return value.Object{ .unordered = map };
+        return map;
     }
     while (true) {
         const key = try parseString(ctx, StringType.value);
@@ -406,37 +387,7 @@ fn parseObjectUnordered(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.
         }
     }
 
-    return value.Object{ .unordered = map };
-}
-
-fn parseObjectOrdered(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.Object {
-    const incremented_depth = try ctx.incrementAndGuardDepth(depth);
-    try ctx.consumeChar(Character.leftBrace);
-    var map_builder = try collection.OrderedStringHashMapBuilder(value.Value).init(ctx.arena_alloc.allocator());
-    ctx.consumeWhitespace();
-    if (try ctx.peekOrThrow() == Character.rightBrace.toByte()) {
-        return value.Object{ .ordered = try map_builder.freeze() };
-    }
-    while (true) {
-        const key = try parseString(ctx, StringType.value);
-        ctx.consumeWhitespace();
-        try ctx.consumeChar(Character.colon);
-        ctx.consumeWhitespace();
-        const val = try parseValue(ctx, incremented_depth);
-        _ = try map_builder.put(key, val);
-        ctx.consumeWhitespace();
-        if (try ctx.peekOrThrow() == Character.comma.toByte()) {
-            try ctx.consumeChar(Character.comma);
-            ctx.consumeWhitespace();
-            continue;
-        } else {
-            ctx.consumeWhitespace();
-            try ctx.consumeChar(Character.rightBrace);
-            break;
-        }
-    }
-
-    return value.Object{ .ordered = try map_builder.freeze() };
+    return map;
 }
 
 fn parseArray(ctx: *ParseContext, depth: u16) ParseOrAllocError!value.Array {
